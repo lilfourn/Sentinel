@@ -50,7 +50,6 @@ export function FileColumnsView({ entries }: FileColumnsViewProps) {
   const { navigateTo, setQuickLookPath } = useNavigationStore();
   const {
     selectedPaths,
-    focusedPath,
     select,
     selectRange,
     clearSelection,
@@ -175,7 +174,6 @@ export function FileColumnsView({ entries }: FileColumnsViewProps) {
         {entries.map((entry) => {
           const Icon = getFileIcon(entry);
           const isSelected = selectedPaths.has(entry.path);
-          const isFocused = focusedPath === entry.path;
 
           return (
             <div
@@ -189,8 +187,7 @@ export function FileColumnsView({ entries }: FileColumnsViewProps) {
                 'break-inside-avoid mb-0.5',
                 'transition-colors duration-75',
                 isSelected && 'bg-orange-500/20',
-                !isSelected && 'hover:bg-gray-500/10',
-                isFocused && !isSelected && 'ring-1 ring-orange-500'
+                !isSelected && 'hover:bg-gray-500/10'
               )}
             >
               {entry.isDirectory ? (

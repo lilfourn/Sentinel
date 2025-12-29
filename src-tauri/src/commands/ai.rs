@@ -1,4 +1,5 @@
 use crate::ai::{AnthropicClient, CredentialManager};
+use crate::jobs::OrganizePlan;
 
 /// Rename suggestion response
 #[derive(serde::Serialize)]
@@ -202,6 +203,7 @@ pub async fn build_folder_context(folder_path: String) -> Result<FolderContext, 
 }
 
 /// Generate organization plan (uses Claude Sonnet)
+/// DEPRECATED: Use generate_organize_plan_agentic instead
 #[tauri::command]
 pub async fn generate_organize_plan(
     context: FolderContext,
@@ -216,6 +218,33 @@ pub async fn generate_organize_plan(
             &user_request,
             context.analysis.as_deref(),
         )
+        .await
+}
+
+/// Agentic organize command - explores folder and generates typed plan
+/// Uses Claude tool-use to explore before generating the plan
+#[tauri::command]
+pub async fn generate_organize_plan_agentic(
+    folder_path: String,
+    user_request: String,
+    app_handle: tauri::AppHandle,
+) -> Result<OrganizePlan, String> {
+    use tauri::Emitter;
+
+    let client = AnthropicClient::new();
+
+    let emit = |thought_type: &str, content: &str| {
+        let _ = app_handle.emit(
+            "ai-thought",
+            serde_json::json!({
+                "type": thought_type,
+                "content": content,
+            }),
+        );
+    };
+
+    client
+        .run_agentic_organize(&folder_path, &user_request, emit)
         .await
 }
 

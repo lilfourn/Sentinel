@@ -49,7 +49,6 @@ function getFileIcon(entry: FileEntry): LucideIcon | null {
 interface FileGridItemProps {
   entry: FileEntry;
   isSelected: boolean;
-  isFocused: boolean;
   onClick: (e: React.MouseEvent) => void;
   onDoubleClick: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
@@ -58,7 +57,6 @@ interface FileGridItemProps {
 function FileGridItem({
   entry,
   isSelected,
-  isFocused,
   onClick,
   onDoubleClick,
   onContextMenu,
@@ -81,8 +79,7 @@ function FileGridItem({
         'flex flex-col items-center p-2 rounded-lg cursor-default select-none',
         'transition-colors duration-75',
         isSelected && 'bg-orange-500/20',
-        !isSelected && 'hover:bg-gray-500/10',
-        isFocused && !isSelected && 'ring-1 ring-orange-500'
+        !isSelected && 'hover:bg-gray-500/10'
       )}
     >
       {/* Icon/Thumbnail area */}
@@ -123,7 +120,6 @@ export function FileGridView({ entries }: FileGridViewProps) {
   const { navigateTo, setQuickLookPath } = useNavigationStore();
   const {
     selectedPaths,
-    focusedPath,
     select,
     selectRange,
     clearSelection,
@@ -256,7 +252,6 @@ export function FileGridView({ entries }: FileGridViewProps) {
             key={entry.path}
             entry={entry}
             isSelected={selectedPaths.has(entry.path)}
-            isFocused={focusedPath === entry.path}
             onClick={(e) => handleClick(entry, e)}
             onDoubleClick={() => handleDoubleClick(entry)}
             onContextMenu={(e) => handleContextMenu(entry, e)}

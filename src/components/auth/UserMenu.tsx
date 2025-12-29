@@ -3,6 +3,7 @@ import { UserButton, useUser } from "@clerk/clerk-react";
 /**
  * User menu button for the toolbar
  * Shows user avatar with dropdown for account management
+ * Styling inherited from ClerkProvider appearance config in main.tsx
  */
 export function UserMenu() {
   const { isSignedIn, user } = useUser();
@@ -20,11 +21,6 @@ export function UserMenu() {
         appearance={{
           elements: {
             avatarBox: "w-7 h-7",
-            userButtonPopoverCard: "bg-gray-800 border border-gray-700",
-            userButtonPopoverActionButton: "text-gray-300 hover:bg-gray-700",
-            userButtonPopoverActionButtonText: "text-gray-300",
-            userButtonPopoverActionButtonIcon: "text-gray-400",
-            userButtonPopoverFooter: "hidden",
           },
         }}
       />

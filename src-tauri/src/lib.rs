@@ -42,6 +42,7 @@ pub fn run() {
             undo_rename,
             build_folder_context,
             generate_organize_plan,
+            generate_organize_plan_agentic,
             // Job persistence commands
             start_organize_job,
             set_job_plan,

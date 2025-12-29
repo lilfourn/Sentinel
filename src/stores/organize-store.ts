@@ -128,83 +128,14 @@ async function executeOperation(op: OrganizeOperation): Promise<void> {
   }
 }
 
-// Robust JSON extraction from AI response
-function extractJsonFromResponse(response: string): any | null {
-  // Clean the response
-  let cleaned = response.trim();
-
-  // Remove markdown code blocks if present
-  cleaned = cleaned.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '');
-  cleaned = cleaned.trim();
-
-  // Try direct parse first (ideal case: response is pure JSON)
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    // Continue to extraction methods
-  }
-
-  // Try to find JSON object in the response
-  // Match the outermost { } pair
-  let braceCount = 0;
-  let startIndex = -1;
-  let endIndex = -1;
-
-  for (let i = 0; i < cleaned.length; i++) {
-    if (cleaned[i] === '{') {
-      if (braceCount === 0) {
-        startIndex = i;
-      }
-      braceCount++;
-    } else if (cleaned[i] === '}') {
-      braceCount--;
-      if (braceCount === 0 && startIndex !== -1) {
-        endIndex = i;
-        break;
-      }
-    }
-  }
-
-  if (startIndex !== -1 && endIndex !== -1) {
-    const jsonStr = cleaned.substring(startIndex, endIndex + 1);
-    try {
-      return JSON.parse(jsonStr);
-    } catch (e) {
-      console.error('[Organize] JSON parse error:', e);
-      console.error('[Organize] Attempted to parse:', jsonStr.substring(0, 500));
-    }
-  }
-
-  // Last resort: try regex (less accurate but handles some edge cases)
-  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
-    try {
-      return JSON.parse(jsonMatch[0]);
-    } catch {
-      // Give up
-    }
-  }
-
-  return null;
-}
-
-// Helper to parse plan from AI response
-function parsePlan(data: any, targetFolder: string): OrganizePlan {
-  const operations: OrganizeOperation[] = (data.operations || []).map((op: any, i: number) => ({
-    opId: `op-${i + 1}`,
-    type: op.type,
-    source: op.source,
-    destination: op.destination,
-    path: op.path,
-    newName: op.newName || op.new_name,
-    riskLevel: getRiskLevel(op.type),
-  }));
-
+// Helper to add risk level to operations from backend
+function addRiskLevels(plan: OrganizePlan): OrganizePlan {
   return {
-    planId: `plan-${Date.now()}`,
-    description: data.description || 'Content-based organization',
-    operations,
-    targetFolder,
+    ...plan,
+    operations: plan.operations.map(op => ({
+      ...op,
+      riskLevel: getRiskLevel(op.type),
+    })),
   };
 }
 
@@ -288,7 +219,7 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
 
     try {
       // Phase 1: Scanning
-      state.addThought('scanning', `Scanning ${folderName}...`, 'Reading folder structure');
+      state.addThought('scanning', `Scanning ${folderName}...`, 'Agent is exploring folder structure');
 
       // Set up event listener for streaming thoughts from Rust
       let unlisten: UnlistenFn | null = null;
@@ -301,44 +232,19 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
         // Event listener failed, continue without it
       }
 
-      // Build context
-      const context = await invoke<{
-        path: string;
-        lsOutput: string;
-        analysis: string | null;
-      }>('build_folder_context', { folderPath });
+      // Use the new agentic command that explores and generates plan
+      state.addThought('analyzing', 'AI agent exploring folder...', 'Using tools to understand file structure');
 
-      // Count files from ls output
-      const lines = context.lsOutput.split('\n').filter(l => l.trim());
-      state.addThought('scanning', `Found ${lines.length} items`, 'Folder scan complete');
-
-      // Phase 2: Analyzing
-      state.addThought('analyzing', 'Analyzing file types and content...', 'Using AI to understand folder structure');
-
-      if (context.analysis) {
-        state.addThought('analyzing', 'Initial analysis complete', context.analysis.slice(0, 100) + '...');
-      }
-
-      // Phase 3: Planning
-      state.addThought('planning', 'Generating organization plan...', 'AI is designing folder structure');
-
-      const response = await invoke<string>('generate_organize_plan', {
-        context,
+      const rawPlan = await invoke<OrganizePlan>('generate_organize_plan_agentic', {
+        folderPath,
         userRequest: 'Organize this folder by grouping files based on their content type and purpose. Create logical folder structures.',
       });
 
       // Clean up listener
       if (unlisten) unlisten();
 
-      // Parse plan from response with robust extraction
-      const planData = extractJsonFromResponse(response);
-      if (!planData) {
-        console.error('[Organize] Failed to parse AI response:', response);
-        state.addThought('error', 'Failed to generate plan', 'Could not parse AI response as JSON');
-        throw new Error('No valid plan generated');
-      }
-
-      const plan = parsePlan(planData, folderPath);
+      // Add risk levels to operations (backend doesn't include them)
+      const plan = addRiskLevels(rawPlan);
 
       state.addThought('planning', `Plan ready: ${plan.operations.length} operations`, plan.description);
 

@@ -63,8 +63,7 @@ export function FileRow({
         'transition-colors duration-75',
         isSelected && isFocused && 'bg-[color:var(--color-file-selected-focused)]',
         isSelected && !isFocused && 'bg-[color:var(--color-file-selected)]',
-        !isSelected && 'hover:bg-[color:var(--color-file-hover)]',
-        isFocused && !isSelected && 'ring-1 ring-inset ring-orange-500'
+        !isSelected && 'hover:bg-[color:var(--color-file-hover)]'
       )}
     >
       {/* Icon */}

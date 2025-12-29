@@ -322,6 +322,216 @@ impl AnthropicClient {
         Ok(response)
     }
 
+    // ============ Agentic Tool-Use Methods ============
+
+    /// Send a message with tools and get response
+    async fn send_with_tools(
+        &self,
+        model: ClaudeModel,
+        system_prompt: &str,
+        messages: &[ToolMessage],
+        tools: Option<&[ToolDefinition]>,
+        max_tokens: u32,
+    ) -> Result<ToolApiResponse, String> {
+        let api_key = CredentialManager::get_api_key("anthropic")?;
+
+        let request = ToolApiRequest {
+            model: model.as_str().to_string(),
+            max_tokens,
+            system: system_prompt.to_string(),
+            messages: messages.to_vec(),
+            tools: tools.map(|t| t.to_vec()),
+        };
+
+        let response = self
+            .client
+            .post(ANTHROPIC_API_URL)
+            .header("x-api-key", &api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("content-type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        let status = response.status();
+
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            if let Ok(api_error) = serde_json::from_str::<ApiError>(&error_text) {
+                return Err(format!("API error: {}", api_error.error.message));
+            }
+            return Err(format!("API error ({}): {}", status, error_text));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse response: {}", e))
+    }
+
+    /// Run agentic organize workflow with tool use
+    pub async fn run_agentic_organize<F>(
+        &self,
+        target_folder: &str,
+        user_request: &str,
+        event_emitter: F,
+    ) -> Result<OrganizePlan, String>
+    where
+        F: Fn(&str, &str),
+    {
+        let tools = super::tools::get_organize_tools();
+        let system_prompt = super::prompts::AGENTIC_ORGANIZE_SYSTEM_PROMPT;
+
+        let initial_message = format!(
+            "Target folder: {}\nUser request: {}\n\nExplore the folder structure and generate an organization plan.",
+            target_folder, user_request
+        );
+
+        let mut messages = vec![ToolMessage {
+            role: "user".to_string(),
+            content: vec![ToolMessageContent::text(&initial_message)],
+        }];
+
+        let allowed_path = Path::new(target_folder);
+
+        // Agentic loop - max 10 iterations to prevent infinite loops
+        for iteration in 0..10 {
+            eprintln!("[AgenticLoop] Iteration {}", iteration + 1);
+            event_emitter("thinking", &format!("Processing... (step {})", iteration + 1));
+
+            let response = self
+                .send_with_tools(
+                    ClaudeModel::Sonnet,
+                    system_prompt,
+                    &messages,
+                    Some(&tools),
+                    4096,
+                )
+                .await?;
+
+            eprintln!("[AgenticLoop] stop_reason: {}", response.stop_reason);
+
+            // Check stop reason
+            if response.stop_reason == "end_turn" {
+                // Extract final JSON from text content
+                let text = Self::extract_text_content(&response.content);
+                eprintln!("[AgenticLoop] Final response length: {} chars", text.len());
+
+                return Self::parse_organize_plan(&text, target_folder);
+            }
+
+            // Handle tool uses
+            let mut tool_results: Vec<ToolResult> = Vec::new();
+            let mut assistant_content: Vec<ToolMessageContent> = Vec::new();
+
+            for block in &response.content {
+                match block {
+                    ContentBlockResponse::Text { text } => {
+                        eprintln!("[AgenticLoop] Thinking: {}...", &text.chars().take(100).collect::<String>());
+                        event_emitter("thinking", text);
+                        assistant_content.push(ToolMessageContent::text(text));
+                    }
+                    ContentBlockResponse::ToolUse { id, name, input } => {
+                        eprintln!("[AgenticLoop] Tool use: {} with {:?}", name, input);
+                        event_emitter("executing", &format!("Running {}", name));
+                        assistant_content.push(ToolMessageContent::tool_use(id, name, input));
+
+                        let result = super::tool_executor::execute_tool(name, input, allowed_path);
+
+                        let tool_result = match result {
+                            Ok(output) => {
+                                eprintln!("[AgenticLoop] Tool success: {} bytes", output.len());
+                                ToolResult::success(id.clone(), output)
+                            }
+                            Err(e) => {
+                                eprintln!("[AgenticLoop] Tool error: {}", e);
+                                ToolResult::error(id.clone(), e)
+                            }
+                        };
+
+                        tool_results.push(tool_result);
+                    }
+                }
+            }
+
+            // Add assistant message with tool uses
+            messages.push(ToolMessage {
+                role: "assistant".to_string(),
+                content: assistant_content,
+            });
+
+            // Add tool results as user message
+            messages.push(ToolMessage {
+                role: "user".to_string(),
+                content: tool_results
+                    .into_iter()
+                    .map(ToolMessageContent::tool_result)
+                    .collect(),
+            });
+        }
+
+        Err("Agentic loop exceeded maximum iterations".to_string())
+    }
+
+    /// Extract text from response content blocks
+    fn extract_text_content(content: &[ContentBlockResponse]) -> String {
+        content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlockResponse::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    /// Parse organize plan from JSON response
+    fn parse_organize_plan(text: &str, target_folder: &str) -> Result<OrganizePlan, String> {
+        use super::json_parser::extract_json;
+        use crate::jobs::OrganizeOperation;
+
+        #[derive(serde::Deserialize)]
+        struct RawPlan {
+            description: String,
+            operations: Vec<RawOperation>,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct RawOperation {
+            #[serde(rename = "type")]
+            op_type: String,
+            source: Option<String>,
+            destination: Option<String>,
+            path: Option<String>,
+            #[serde(alias = "newName", alias = "new_name")]
+            new_name: Option<String>,
+        }
+
+        let raw: RawPlan = extract_json(text)?;
+
+        let operations: Vec<OrganizeOperation> = raw
+            .operations
+            .into_iter()
+            .enumerate()
+            .map(|(i, op)| OrganizeOperation {
+                op_id: format!("op-{}", i + 1),
+                op_type: op.op_type,
+                source: op.source,
+                destination: op.destination,
+                path: op.path,
+                new_name: op.new_name,
+            })
+            .collect();
+
+        Ok(OrganizePlan {
+            plan_id: format!("plan-{}", chrono::Utc::now().timestamp_millis()),
+            description: raw.description,
+            operations,
+            target_folder: target_folder.to_string(),
+        })
+    }
+
     /// Validate API key by making a minimal request
     pub async fn validate_api_key(api_key: &str) -> Result<bool, String> {
         let client = Client::new();
