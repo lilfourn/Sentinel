@@ -20,6 +20,7 @@ import {
   type ThoughtType,
 } from '../../stores/organize-store';
 import { ConventionSelector } from './ConventionSelector';
+import { InstructionInput } from './InstructionInput';
 import { DynamicStatus } from './DynamicStatus';
 import { SimulationControls } from './SimulationControls';
 import { ExecutionProgress } from './ExecutionProgress';
@@ -34,8 +35,13 @@ export function ChangesPanel() {
     currentPhase,
     currentPlan,
     isExecuting,
+    isAnalyzing,
     executedOps,
     closeOrganizer,
+    userInstruction,
+    setUserInstruction,
+    submitInstruction,
+    awaitingInstruction,
     awaitingConventionSelection,
     suggestedConventions,
     selectConvention,
@@ -100,11 +106,22 @@ export function ChangesPanel() {
             <ActivityItem
               key={thought.id}
               thought={thought}
-              isLatest={index === thoughts.length - 1 && isWorking && !awaitingConventionSelection}
+              isLatest={index === thoughts.length - 1 && isWorking && !awaitingInstruction && !awaitingConventionSelection}
             />
           ))}
 
-          {/* Naming Convention Selection */}
+          {/* V6: User Instruction Input */}
+          {awaitingInstruction && (
+            <InstructionInput
+              instruction={userInstruction}
+              onInstructionChange={setUserInstruction}
+              onSubmit={submitInstruction}
+              isDisabled={isAnalyzing}
+              folderName={folderName}
+            />
+          )}
+
+          {/* Naming Convention Selection (deprecated - kept for compatibility) */}
           {awaitingConventionSelection && suggestedConventions && (
             <ConventionSelector
               conventions={suggestedConventions}

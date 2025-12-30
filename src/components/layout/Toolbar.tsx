@@ -8,6 +8,7 @@ import {
   Eye,
   EyeOff,
   Settings,
+  Bot,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useNavigationStore } from '../../stores/navigation-store';
@@ -130,14 +131,10 @@ export function Toolbar({ onOpenSettings, onToggleChat }: ToolbarProps) {
       {/* Chat button */}
       <button
         onClick={onToggleChat}
-        className="p-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+        className="p-1.5 rounded-md hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 transition-colors"
         title="Chat"
       >
-        <img
-          src="/sentinal-chat.svg"
-          alt="Chat"
-          className="w-7 h-7"
-        />
+        <Bot size={16} />
       </button>
 
       {/* User menu (shows when signed in) */}

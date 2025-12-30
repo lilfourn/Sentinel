@@ -5,11 +5,15 @@
 //! - read_file: Read file contents
 //! - inspect_pattern: Sample files from hologram pattern
 //! - list_directory: List directory contents
+//! - shell: Execute safe shell commands (allowlist only)
+//! - grep: Search file contents with regex
 
+use super::tools_terminal::{execute_bash, execute_grep, execute_shell, get_terminal_tools};
+use crate::security::{safe_regex, PathValidator};
 use regex::Regex;
 use serde_json::{json, Value};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Result of executing a chat tool
 pub enum ChatToolResult {
@@ -19,7 +23,7 @@ pub enum ChatToolResult {
 
 /// Get tool definitions for the chat agent
 pub fn get_chat_tools() -> Vec<Value> {
-    vec![
+    let mut tools = vec![
         json!({
             "name": "search_hybrid",
             "description": "Search files using semantic understanding and keyword matching. Use when user asks to find files.",
@@ -109,7 +113,11 @@ pub fn get_chat_tools() -> Vec<Value> {
                 "required": ["path"]
             }
         }),
-    ]
+    ];
+
+    // Add terminal tools (bash, grep)
+    tools.extend(get_terminal_tools());
+    tools
 }
 
 /// Execute a chat tool
@@ -121,8 +129,66 @@ pub async fn execute_chat_tool(name: &str, input: &Value) -> ChatToolResult {
         "read_file" => execute_read_file(input),
         "inspect_pattern" => execute_inspect_pattern(input),
         "list_directory" => execute_list_directory(input),
+        // "shell" is the new safe command; "bash" kept for backward compatibility
+        "shell" => match execute_shell(input).await {
+            Ok(output) => ChatToolResult::Success(output),
+            Err(e) => ChatToolResult::Error(e),
+        },
+        "bash" => match execute_bash(input).await {
+            Ok(output) => ChatToolResult::Success(output),
+            Err(e) => ChatToolResult::Error(e),
+        },
+        "grep" => match execute_grep(input).await {
+            Ok(output) => ChatToolResult::Success(output),
+            Err(e) => ChatToolResult::Error(e),
+        },
         _ => ChatToolResult::Error(format!("Unknown tool: {}", name)),
     }
+}
+
+/// Tokenize a query into searchable words
+/// "cover letters 2024" → ["cover", "letters", "2024"]
+fn tokenize_query(query: &str) -> Vec<String> {
+    query
+        .to_lowercase()
+        .split(|c: char| c.is_whitespace() || c == '_' || c == '-' || c == '.' || c == ',')
+        .filter(|s| s.len() >= 2) // Skip single chars
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Score how well a filename matches the query tokens
+/// Returns the count of tokens that appear in the filename
+fn score_filename(name: &str, tokens: &[String]) -> usize {
+    let name_lower = name.to_lowercase();
+    tokens
+        .iter()
+        .filter(|t| name_lower.contains(t.as_str()))
+        .count()
+}
+
+/// Check if query is a glob pattern (contains *, ?, or [])
+fn is_glob_pattern(query: &str) -> bool {
+    query.contains('*') || query.contains('?') || query.contains('[')
+}
+
+/// Convert a glob pattern to a regex pattern
+fn glob_to_regex(glob: &str) -> Result<Regex, String> {
+    let mut regex = String::from("(?i)^"); // Case insensitive, anchor start
+
+    for c in glob.chars() {
+        match c {
+            '*' => regex.push_str(".*"),
+            '?' => regex.push('.'),
+            '.' => regex.push_str("\\."),
+            '[' => regex.push('['),
+            ']' => regex.push(']'),
+            c => regex.push(c),
+        }
+    }
+
+    regex.push('$'); // Anchor end
+    Regex::new(&regex).map_err(|e| format!("Invalid glob pattern: {}", e))
 }
 
 async fn execute_search_hybrid(input: &Value) -> ChatToolResult {
@@ -138,84 +204,181 @@ async fn execute_search_hybrid(input: &Value) -> ChatToolResult {
         .unwrap_or(20) as usize;
 
     // Get file types filter
-    let file_types: Option<Vec<&str>> = input.get("file_types").and_then(|ft| {
+    let file_types: Option<Vec<String>> = input.get("file_types").and_then(|ft| {
         ft.as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_lowercase())).collect())
     });
 
-    // For now, do a simple filename-based search
-    // In production, this would use LocalVectorIndex
     let search_dir = directory.unwrap_or(".");
     let search_path = PathBuf::from(search_dir);
 
-    if !search_path.is_dir() {
+    // Security: Validate search path
+    let validated_search_path = match PathValidator::validate_for_read(&search_path, None) {
+        Ok(p) => p,
+        Err(e) => return ChatToolResult::Error(format!("Path validation failed: {}", e)),
+    };
+
+    if !validated_search_path.is_dir() {
         return ChatToolResult::Error(format!("Directory not found: {}", search_dir));
     }
 
-    let query_lower = query.to_lowercase();
-    let mut results: Vec<String> = Vec::new();
+    eprintln!("[SearchHybrid] Query: '{}' in '{}'", query, validated_search_path.display());
+
+    // Determine search strategy
+    let is_glob = is_glob_pattern(query);
+    let glob_regex = if is_glob {
+        match glob_to_regex(query) {
+            Ok(r) => Some(r),
+            Err(e) => return ChatToolResult::Error(e),
+        }
+    } else {
+        None
+    };
+
+    // Tokenize for word-based matching
+    let tokens = tokenize_query(query);
+    if tokens.is_empty() && !is_glob {
+        return ChatToolResult::Error("Query too short or contains only special characters".to_string());
+    }
+
+    eprintln!("[SearchHybrid] Strategy: {}, tokens: {:?}",
+        if is_glob { "glob" } else { "word-match" },
+        tokens
+    );
+
+    // Results with scores: (path, score)
+    let mut scored_results: Vec<(String, usize)> = Vec::new();
 
     fn search_recursive(
         dir: &PathBuf,
-        query: &str,
-        file_types: &Option<Vec<&str>>,
-        results: &mut Vec<String>,
+        tokens: &[String],
+        glob_regex: &Option<Regex>,
+        file_types: &Option<Vec<String>>,
+        results: &mut Vec<(String, usize)>,
         max_results: usize,
         depth: usize,
     ) {
-        if depth > 5 || results.len() >= max_results {
+        // Increased depth limit for better coverage
+        if depth > 10 || results.len() >= max_results * 2 {
             return;
         }
 
         if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
-                if results.len() >= max_results {
-                    break;
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().to_string();
+                let name_lower = name.to_lowercase();
+
+                // Skip hidden files/dirs
+                if name.starts_with('.') {
+                    continue;
                 }
 
-                let path = entry.path();
-                let name = entry.file_name().to_string_lossy().to_lowercase();
-
-                // Check if name matches query
-                if name.contains(query) {
-                    // Check file type filter
-                    if let Some(types) = file_types {
+                // Check file type filter if specified
+                if let Some(types) = file_types {
+                    if !types.is_empty() {
                         if let Some(ext) = path.extension() {
                             let ext_str = ext.to_string_lossy().to_lowercase();
-                            if !types.iter().any(|t| t.to_lowercase() == ext_str) {
+                            if !types.contains(&ext_str) {
+                                // Still recurse into directories
+                                if path.is_dir() {
+                                    search_recursive(&path, tokens, glob_regex, file_types, results, max_results, depth + 1);
+                                }
                                 continue;
                             }
-                        } else if !types.is_empty() {
+                        } else if path.is_file() {
+                            // File has no extension but filter requires one
                             continue;
                         }
                     }
-                    results.push(path.display().to_string());
+                }
+
+                // Calculate match score
+                let score = if let Some(regex) = glob_regex {
+                    // Glob pattern matching
+                    if regex.is_match(&name) { 10 } else { 0 }
+                } else {
+                    // Word-based token matching
+                    score_filename(&name_lower, tokens)
+                };
+
+                // Add to results if matched
+                if score > 0 && path.is_file() {
+                    results.push((path.display().to_string(), score));
                 }
 
                 // Recurse into directories
-                if path.is_dir() && !name.starts_with('.') {
-                    search_recursive(&path, query, file_types, results, max_results, depth + 1);
+                if path.is_dir() {
+                    search_recursive(&path, tokens, glob_regex, file_types, results, max_results, depth + 1);
                 }
             }
         }
     }
 
     search_recursive(
-        &search_path,
-        &query_lower,
+        &validated_search_path,
+        &tokens,
+        &glob_regex,
         &file_types,
-        &mut results,
+        &mut scored_results,
         max_results,
         0,
     );
 
-    if results.is_empty() {
+    // Sort by score (highest first), then truncate
+    scored_results.sort_by(|a, b| b.1.cmp(&a.1));
+    scored_results.truncate(max_results);
+
+    eprintln!("[SearchHybrid] Found {} results", scored_results.len());
+
+    // If no filename matches and not a glob, try content search as fallback
+    if scored_results.is_empty() && !is_glob {
+        eprintln!("[SearchHybrid] No filename matches, trying content search...");
+
+        // Use grep for content search
+        let grep_input = json!({
+            "pattern": query,
+            "path": search_dir,
+            "max_results": max_results
+        });
+
+        match execute_grep(&grep_input).await {
+            Ok(grep_output) => {
+                if !grep_output.contains("(Command executed successfully, no output)")
+                    && !grep_output.is_empty()
+                {
+                    return ChatToolResult::Success(format!(
+                        "No files with matching names. Content search results:\n{}",
+                        grep_output
+                    ));
+                }
+            }
+            Err(_) => {
+                // Grep failed, continue with empty result
+            }
+        }
+
+        return ChatToolResult::Success("No files found matching the query.".to_string());
+    }
+
+    if scored_results.is_empty() {
         ChatToolResult::Success("No files found matching the query.".to_string())
     } else {
+        let formatted: Vec<String> = scored_results
+            .iter()
+            .map(|(path, score)| {
+                if *score > 1 {
+                    format!("- {} (matched {} tokens)", path, score)
+                } else {
+                    format!("- {}", path)
+                }
+            })
+            .collect();
+
         ChatToolResult::Success(format!(
             "Found {} files:\n{}",
-            results.len(),
-            results.iter().map(|p| format!("- {}", p)).collect::<Vec<_>>().join("\n")
+            scored_results.len(),
+            formatted.join("\n")
         ))
     }
 }
@@ -231,17 +394,18 @@ fn execute_read_file(input: &Value) -> ChatToolResult {
         .and_then(|m| m.as_u64())
         .unwrap_or(200) as usize;
 
-    // Security: Validate path
+    // Security: Validate path using PathValidator
     let path_buf = PathBuf::from(path);
-    if !path_buf.exists() {
-        return ChatToolResult::Error(format!("File not found: {}", path));
-    }
+    let validated_path = match PathValidator::validate_for_read(&path_buf, None) {
+        Ok(p) => p,
+        Err(e) => return ChatToolResult::Error(format!("Path validation failed: {}", e)),
+    };
 
-    if path_buf.is_dir() {
+    if validated_path.is_dir() {
         return ChatToolResult::Error("Path is a directory, not a file".to_string());
     }
 
-    match fs::read_to_string(&path_buf) {
+    match fs::read_to_string(&validated_path) {
         Ok(content) => {
             let lines: Vec<&str> = content.lines().take(max_lines).collect();
             let truncated = lines.len() < content.lines().count();
@@ -278,20 +442,25 @@ fn execute_inspect_pattern(input: &Value) -> ChatToolResult {
         .and_then(|s| s.as_u64())
         .unwrap_or(3) as usize;
 
-    // Compile regex
-    let regex = match Regex::new(pattern) {
+    // Security: Validate regex using safe_regex to prevent ReDoS
+    let regex = match safe_regex(pattern) {
         Ok(r) => r,
-        Err(e) => return ChatToolResult::Error(format!("Invalid regex: {}", e)),
+        Err(e) => return ChatToolResult::Error(format!("Invalid or unsafe regex: {}", e)),
     };
 
-    // Find matching files
+    // Security: Validate directory path
     let dir_path = PathBuf::from(directory);
-    if !dir_path.is_dir() {
-        return ChatToolResult::Error("Directory not found".to_string());
+    let validated_dir = match PathValidator::validate_for_read(&dir_path, None) {
+        Ok(p) => p,
+        Err(e) => return ChatToolResult::Error(format!("Path validation failed: {}", e)),
+    };
+
+    if !validated_dir.is_dir() {
+        return ChatToolResult::Error("Path is not a directory".to_string());
     }
 
     let mut matches: Vec<String> = Vec::new();
-    if let Ok(entries) = fs::read_dir(&dir_path) {
+    if let Ok(entries) = fs::read_dir(&validated_dir) {
         for entry in entries.flatten() {
             if let Some(name) = entry.file_name().to_str() {
                 if regex.is_match(name) {
@@ -326,12 +495,18 @@ fn execute_list_directory(input: &Value) -> ChatToolResult {
         .and_then(|m| m.as_u64())
         .unwrap_or(50) as usize;
 
+    // Security: Validate path
     let dir_path = PathBuf::from(path);
-    if !dir_path.is_dir() {
+    let validated_path = match PathValidator::validate_for_read(&dir_path, None) {
+        Ok(p) => p,
+        Err(e) => return ChatToolResult::Error(format!("Path validation failed: {}", e)),
+    };
+
+    if !validated_path.is_dir() {
         return ChatToolResult::Error("Path is not a directory".to_string());
     }
 
-    match fs::read_dir(&dir_path) {
+    match fs::read_dir(&validated_path) {
         Ok(entries) => {
             let mut items: Vec<(String, bool)> = entries
                 .flatten()
@@ -378,7 +553,7 @@ mod tests {
     #[test]
     fn test_get_chat_tools() {
         let tools = get_chat_tools();
-        assert_eq!(tools.len(), 4);
+        assert_eq!(tools.len(), 6); // 4 original + 2 terminal tools (shell, grep)
 
         // Verify tool names
         let names: Vec<&str> = tools
@@ -389,5 +564,7 @@ mod tests {
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"inspect_pattern"));
         assert!(names.contains(&"list_directory"));
+        assert!(names.contains(&"shell")); // Renamed from "bash" to "shell"
+        assert!(names.contains(&"grep"));
     }
 }

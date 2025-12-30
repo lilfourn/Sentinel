@@ -5,6 +5,7 @@
 //! - list_files_for_mention: Get files for @ mention autocomplete
 
 use crate::ai::chat::{run_chat_agent, ContextItem, ConversationMessage};
+use crate::security::PathValidator;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -38,6 +39,12 @@ pub struct ChatStreamRequest {
     pub context_items: Vec<ContextItem>,
     pub model: String,
     pub history: Vec<ConversationMessage>,
+    #[serde(default = "default_extended_thinking")]
+    pub extended_thinking: bool,
+}
+
+fn default_extended_thinking() -> bool {
+    true
 }
 
 /// Chat stream response
@@ -66,10 +73,11 @@ pub async fn chat_stream(
     eprintln!("[ChatCommand] Context items: {}", request.context_items.len());
     eprintln!("[ChatCommand] History length: {}", request.history.len());
 
-    // Map model names to Anthropic model IDs
+    // Map to Anthropic model aliases (or use full IDs)
     let model_id = match request.model.as_str() {
-        "claude-haiku-4-5" => "claude-haiku-4-5-20241022",
-        "claude-sonnet-4-5" => "claude-sonnet-4-5-20241022",
+        "claude-haiku-4-5" => "claude-haiku-4-5",     // claude-haiku-4-5-20251001
+        "claude-sonnet-4-5" => "claude-sonnet-4-5",   // claude-sonnet-4-5-20250929
+        "claude-opus-4-5" => "claude-opus-4-5",       // claude-opus-4-5-20251101
         _ => &request.model,
     };
 
@@ -79,6 +87,7 @@ pub async fn chat_stream(
         &request.context_items,
         model_id,
         &request.history,
+        request.extended_thinking,
     )
     .await
     {
@@ -130,14 +139,19 @@ pub async fn list_files_for_mention(
     eprintln!("[ChatCommand] list_files_for_mention: {}", directory);
 
     let dir_path = PathBuf::from(&directory);
-    if !dir_path.is_dir() {
+
+    // Security: Validate the directory path
+    let validated_path = PathValidator::validate_for_read(&dir_path, None)
+        .map_err(|e| format!("Path validation failed: {}", e))?;
+
+    if !validated_path.is_dir() {
         return Err(format!("Not a directory: {}", directory));
     }
 
     let max = max_results.unwrap_or(50);
     let query_lower = query.map(|q| q.to_lowercase());
 
-    let entries = fs::read_dir(&dir_path)
+    let entries = fs::read_dir(&validated_path)
         .map_err(|e| format!("Failed to read directory: {}", e))?;
 
     let mut results: Vec<MentionFile> = Vec::new();

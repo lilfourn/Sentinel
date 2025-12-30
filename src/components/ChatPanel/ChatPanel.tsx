@@ -4,7 +4,6 @@ import { useChatStore, getContextStrategy } from '../../stores/chat-store';
 import { MessageList } from './MessageList';
 import { ContextStack } from './ContextStack';
 import { ChatInput } from './ChatInput';
-import { MentionPopover } from './MentionPopover';
 
 interface ChatPanelProps {
   isOpen: boolean;
@@ -12,7 +11,7 @@ interface ChatPanelProps {
 }
 
 export function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
-  const { addContext, openMention, closeMention, isMentionOpen } = useChatStore();
+  const { addContext } = useChatStore();
   const [isDragOver, setIsDragOver] = useState(false);
 
   // Sync external isOpen prop with store
@@ -82,17 +81,6 @@ export function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
     }
   };
 
-  const handleMentionSelect = (item: { path: string; name: string; type: 'file' | 'folder' }) => {
-    const strategy = getContextStrategy(item.type);
-    addContext({
-      type: item.type,
-      path: item.path,
-      name: item.name,
-      strategy,
-    });
-    closeMention();
-  };
-
   return (
     <div
       className={`
@@ -140,15 +128,8 @@ export function ChatPanel({ isOpen, onClose }: ChatPanelProps) {
       {/* Messages */}
       <MessageList />
 
-      {/* Input */}
-      <ChatInput onOpenMention={openMention} />
-
-      {/* Mention popover */}
-      <MentionPopover
-        isOpen={isMentionOpen}
-        onClose={closeMention}
-        onSelect={handleMentionSelect}
-      />
+      {/* Input with inline mention dropdown */}
+      <ChatInput />
     </div>
   );
 }

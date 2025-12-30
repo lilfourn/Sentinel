@@ -178,3 +178,87 @@
     background: rgba(255, 255, 255, 0.3);
   }
 }
+
+/* ============================================================================
+   STREAMING & THINKING ANIMATIONS
+   ============================================================================ */
+
+/* Shimmer sweep for streaming text */
+@keyframes shimmer-sweep {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* Cursor blink animation */
+@keyframes cursor-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* Dot bounce sequence for thinking indicator */
+@keyframes dot-bounce {
+  0%, 80%, 100% { transform: translateY(0); }
+  40% { transform: translateY(-3px); }
+}
+
+/* Breathing pulse for subtle emphasis */
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+/* Streaming text shimmer effect */
+.streaming-shimmer {
+  position: relative;
+}
+
+.streaming-shimmer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    transparent 40%,
+    rgba(251, 146, 60, 0.15) 50%,
+    transparent 60%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer-sweep 2s ease-in-out infinite;
+  pointer-events: none;
+  border-radius: 4px;
+}
+
+/* Blinking cursor utility */
+.animate-cursor-blink {
+  animation: cursor-blink 1s steps(1) infinite;
+}
+
+/* Shimmer text effect for status messages */
+.shimmer-text {
+  background: linear-gradient(
+    90deg,
+    #6b7280 0%,
+    #9ca3af 50%,
+    #6b7280 100%
+  );
+  background-size: 200% auto;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer-sweep 2s linear infinite;
+}
+
+/* Thinking dots animation delays */
+.thinking-dot-1 { animation: dot-bounce 1.4s ease-in-out infinite 0s; }
+.thinking-dot-2 { animation: dot-bounce 1.4s ease-in-out infinite 0.16s; }
+.thinking-dot-3 { animation: dot-bounce 1.4s ease-in-out infinite 0.32s; }
+
+/* Thinking section pulse */
+.thinking-pulse {
+  animation: thinking-pulse 2s ease-in-out infinite;
+}

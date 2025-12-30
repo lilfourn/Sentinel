@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
@@ -36,10 +37,20 @@ export interface ChatMessage {
   thoughts?: ThoughtStep[];
   contextRefs?: string[];  // IDs of ContextItems used
   isStreaming?: boolean;
+  /** Extended thinking content (Claude's internal reasoning) */
+  thinking?: string;
+  isThinking?: boolean;
 }
 
-export type ChatModel = 'claude-haiku-4-5' | 'claude-sonnet-4-5';
+export type ChatModel = 'claude-haiku-4-5' | 'claude-sonnet-4-5' | 'claude-opus-4-5';
 export type ChatStatus = 'idle' | 'thinking' | 'streaming' | 'error';
+
+/** File/folder item for mention autocomplete */
+export interface MentionItem {
+  path: string;
+  name: string;
+  isDirectory: boolean;
+}
 
 // ============================================================================
 // STATE INTERFACE
@@ -58,13 +69,18 @@ interface ChatState {
   model: ChatModel;
   status: ChatStatus;
   error: string | null;
+  extendedThinking: boolean;
 
   // Streaming
   currentStreamId: string | null;
 
-  // Mention popover
+  // Mention autocomplete
   isMentionOpen: boolean;
   mentionQuery: string;
+  mentionStartIndex: number;
+  mentionResults: MentionItem[];
+  selectedMentionIndex: number;
+  isMentionLoading: boolean;
 }
 
 interface ChatActions {
@@ -81,21 +97,29 @@ interface ChatActions {
 
   // Model
   setModel: (model: ChatModel) => void;
+  setExtendedThinking: (enabled: boolean) => void;
 
   // Messaging
   sendMessage: (text: string) => Promise<void>;
   abort: () => void;
   clearHistory: () => void;
 
-  // Mention
-  openMention: () => void;
+  // Mention autocomplete
+  openMention: (startIndex: number) => void;
   closeMention: () => void;
   setMentionQuery: (query: string) => void;
+  setMentionResults: (items: MentionItem[]) => void;
+  setMentionLoading: (loading: boolean) => void;
+  selectNextMention: () => void;
+  selectPrevMention: () => void;
+  resetMentionSelection: () => void;
 
   // Internal
   _addThought: (messageId: string, thought: ThoughtStep) => void;
   _updateThought: (messageId: string, thoughtId: string, update: Partial<ThoughtStep>) => void;
   _appendContent: (messageId: string, chunk: string) => void;
+  _appendThinking: (messageId: string, chunk: string) => void;
+  _finishThinking: (messageId: string, fullContent?: string) => void;
   _finishStream: (messageId: string) => void;
   _setError: (error: string | null) => void;
 }
@@ -104,7 +128,9 @@ interface ChatActions {
 // STORE IMPLEMENTATION
 // ============================================================================
 
-export const useChatStore = create<ChatState & ChatActions>((set, get) => ({
+export const useChatStore = create<ChatState & ChatActions>()(
+  persist(
+    (set, get) => ({
   // Initial state
   isOpen: false,
   width: 400,
@@ -113,9 +139,14 @@ export const useChatStore = create<ChatState & ChatActions>((set, get) => ({
   model: 'claude-sonnet-4-5',
   status: 'idle',
   error: null,
+  extendedThinking: true,
   currentStreamId: null,
   isMentionOpen: false,
   mentionQuery: '',
+  mentionStartIndex: -1,
+  mentionResults: [],
+  selectedMentionIndex: 0,
+  isMentionLoading: false,
 
   // Panel actions
   open: () => set({ isOpen: true }),
@@ -145,10 +176,11 @@ export const useChatStore = create<ChatState & ChatActions>((set, get) => ({
 
   // Model
   setModel: (model) => set({ model }),
+  setExtendedThinking: (enabled) => set({ extendedThinking: enabled }),
 
   // Messaging
   sendMessage: async (text) => {
-    const { activeContext, model, messages } = get();
+    const { activeContext, model, messages, extendedThinking } = get();
 
     if (!text.trim()) return;
 
@@ -181,6 +213,7 @@ export const useChatStore = create<ChatState & ChatActions>((set, get) => ({
     // Set up event listeners
     let unlistenToken: UnlistenFn | null = null;
     let unlistenThought: UnlistenFn | null = null;
+    let unlistenThinking: UnlistenFn | null = null;
     let unlistenComplete: UnlistenFn | null = null;
     let unlistenError: UnlistenFn | null = null;
 
@@ -191,7 +224,26 @@ export const useChatStore = create<ChatState & ChatActions>((set, get) => ({
         set({ status: 'streaming' });
       });
 
-      // Listen for thought steps
+      // Listen for extended thinking
+      unlistenThinking = await listen<{ status: string; chunk?: string; content?: string }>('chat:thinking', (event) => {
+        const { status, chunk, content } = event.payload;
+        if (status === 'started') {
+          // Mark message as thinking
+          set((state) => ({
+            messages: state.messages.map((m) =>
+              m.id === assistantMessage.id ? { ...m, isThinking: true, thinking: '' } : m
+            ),
+          }));
+        } else if (status === 'streaming' && chunk) {
+          // Append thinking chunk
+          get()._appendThinking(assistantMessage.id, chunk);
+        } else if (status === 'complete') {
+          // Finish thinking
+          get()._finishThinking(assistantMessage.id, content);
+        }
+      });
+
+      // Listen for thought steps (tool usage)
       unlistenThought = await listen<ThoughtStep>('chat:thought', (event) => {
         const thought = event.payload;
         const existingThought = get().messages
@@ -243,6 +295,7 @@ export const useChatStore = create<ChatState & ChatActions>((set, get) => ({
           contextItems,
           model,
           history: conversationHistory,
+          extendedThinking,
         },
       });
 
@@ -253,6 +306,7 @@ export const useChatStore = create<ChatState & ChatActions>((set, get) => ({
     } finally {
       // Cleanup listeners
       unlistenToken?.();
+      unlistenThinking?.();
       unlistenThought?.();
       unlistenComplete?.();
       unlistenError?.();
@@ -274,10 +328,32 @@ export const useChatStore = create<ChatState & ChatActions>((set, get) => ({
     status: 'idle',
   }),
 
-  // Mention actions
-  openMention: () => set({ isMentionOpen: true, mentionQuery: '' }),
-  closeMention: () => set({ isMentionOpen: false, mentionQuery: '' }),
+  // Mention autocomplete actions
+  openMention: (startIndex) => set({
+    isMentionOpen: true,
+    mentionQuery: '',
+    mentionStartIndex: startIndex,
+    mentionResults: [],
+    selectedMentionIndex: 0,
+  }),
+  closeMention: () => set({
+    isMentionOpen: false,
+    mentionQuery: '',
+    mentionStartIndex: -1,
+    mentionResults: [],
+    selectedMentionIndex: 0,
+    isMentionLoading: false,
+  }),
   setMentionQuery: (query) => set({ mentionQuery: query }),
+  setMentionResults: (items) => set({ mentionResults: items, isMentionLoading: false }),
+  setMentionLoading: (loading) => set({ isMentionLoading: loading }),
+  selectNextMention: () => set((state) => ({
+    selectedMentionIndex: Math.min(state.selectedMentionIndex + 1, state.mentionResults.length - 1),
+  })),
+  selectPrevMention: () => set((state) => ({
+    selectedMentionIndex: Math.max(state.selectedMentionIndex - 1, 0),
+  })),
+  resetMentionSelection: () => set({ selectedMentionIndex: 0 }),
 
   // Internal actions
   _addThought: (messageId, thought) => {
@@ -313,6 +389,26 @@ export const useChatStore = create<ChatState & ChatActions>((set, get) => ({
     }));
   },
 
+  _appendThinking: (messageId, chunk) => {
+    set((state) => ({
+      messages: state.messages.map((m) =>
+        m.id === messageId
+          ? { ...m, thinking: (m.thinking || '') + chunk, isThinking: true }
+          : m
+      ),
+    }));
+  },
+
+  _finishThinking: (messageId, fullContent) => {
+    set((state) => ({
+      messages: state.messages.map((m) =>
+        m.id === messageId
+          ? { ...m, thinking: fullContent ?? m.thinking, isThinking: false }
+          : m
+      ),
+    }));
+  },
+
   _finishStream: (messageId) => {
     set((state) => ({
       messages: state.messages.map((m) =>
@@ -326,7 +422,16 @@ export const useChatStore = create<ChatState & ChatActions>((set, get) => ({
   _setError: (error) => {
     set({ status: 'error', error });
   },
-}));
+    }),
+    {
+      name: 'sentinel-chat-preferences',
+      partialize: (state) => ({
+        model: state.model,
+        extendedThinking: state.extendedThinking,
+      }),
+    }
+  )
+);
 
 // ============================================================================
 // HELPER FUNCTIONS

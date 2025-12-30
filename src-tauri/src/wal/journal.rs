@@ -146,10 +146,10 @@ impl WALManager {
             kind: WALErrorKind::IoError,
         })?;
 
-        eprintln!(
-            "[WAL] Saved journal {} with {} entries",
-            journal.job_id,
-            journal.entries.len()
+        tracing::debug!(
+            job_id = %journal.job_id,
+            entries = journal.entries.len(),
+            "Saved WAL journal"
         );
 
         Ok(())
@@ -173,10 +173,10 @@ impl WALManager {
             kind: WALErrorKind::SerializationError,
         })?;
 
-        eprintln!(
-            "[WAL] Loaded journal {} with {} entries",
-            journal.job_id,
-            journal.entries.len()
+        tracing::debug!(
+            job_id = %journal.job_id,
+            entries = journal.entries.len(),
+            "Loaded WAL journal"
         );
 
         Ok(Some(journal))
@@ -230,10 +230,10 @@ impl WALManager {
             });
 
             if has_incomplete {
-                eprintln!(
-                    "[WAL] Found incomplete journal: {} ({} pending)",
-                    journal.job_id,
-                    journal.pending_entries().len()
+                tracing::info!(
+                    job_id = %journal.job_id,
+                    pending = journal.pending_entries().len(),
+                    "Found incomplete WAL journal for recovery"
                 );
                 return Ok(Some(journal));
             }
@@ -263,7 +263,7 @@ impl WALManager {
         self.save_journal(&journal)?;
 
         // Lock is automatically released when _lock is dropped
-        eprintln!("[WAL] Marked entry {} as complete", entry_id);
+        tracing::debug!(entry_id = %entry_id, "Marked WAL entry complete");
         Ok(())
     }
 
@@ -293,7 +293,7 @@ impl WALManager {
         self.save_journal(&journal)?;
 
         // Lock is automatically released when _lock is dropped
-        eprintln!("[WAL] Marked entry {} as failed: {}", entry_id, error);
+        tracing::debug!(entry_id = %entry_id, error = %error, "Marked WAL entry failed");
         Ok(())
     }
 
@@ -318,7 +318,7 @@ impl WALManager {
         self.save_journal(&journal)?;
 
         // Lock is automatically released when _lock is dropped
-        eprintln!("[WAL] Marked entry {} as in progress", entry_id);
+        tracing::debug!(entry_id = %entry_id, "Marked WAL entry in progress");
         Ok(())
     }
 
@@ -343,7 +343,7 @@ impl WALManager {
         self.save_journal(&journal)?;
 
         // Lock is automatically released when _lock is dropped
-        eprintln!("[WAL] Marked entry {} as rolled back", entry_id);
+        tracing::debug!(entry_id = %entry_id, "Marked WAL entry rolled back");
         Ok(())
     }
 
@@ -357,7 +357,7 @@ impl WALManager {
                 message: format!("Failed to delete journal: {}", e),
                 kind: WALErrorKind::IoError,
             })?;
-            eprintln!("[WAL] Discarded journal: {}", job_id);
+            tracing::info!(job_id = %job_id, "Discarded WAL journal");
         }
 
         // Clean up lock file

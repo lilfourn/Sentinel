@@ -236,6 +236,28 @@ impl LocalVectorIndex {
     pub fn indexed_paths(&self) -> Vec<&PathBuf> {
         self.documents.keys().collect()
     }
+
+    /// Generate embeddings for arbitrary texts (for Blueprint folder descriptions)
+    ///
+    /// # Arguments
+    /// * `texts` - Slice of text strings to embed
+    ///
+    /// # Returns
+    /// Vec of embedding vectors (384 dimensions each for AllMiniLM-L6-V2)
+    pub fn embed_texts(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, String> {
+        if texts.is_empty() {
+            return Ok(vec![]);
+        }
+
+        self.model
+            .embed(texts.to_vec(), None)
+            .map_err(|e| format!("Batch embedding failed: {}", e))
+    }
+
+    /// Get the embedding model for direct access
+    pub fn model(&self) -> &TextEmbedding {
+        &self.model
+    }
 }
 
 /// Implementation of VectorIndex trait for rule evaluation compatibility

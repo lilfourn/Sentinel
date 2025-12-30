@@ -186,10 +186,10 @@ impl ExecutionEngine {
         // Build DAG from pending entries
         let dag = ExecutionDAG::from_entries(pending_entries)?;
 
-        eprintln!(
-            "[Executor] Built DAG with {} entries across {} levels",
-            dag.len(),
-            dag.level_count()
+        tracing::info!(
+            entries = dag.len(),
+            levels = dag.level_count(),
+            "Built execution DAG"
         );
 
         self.execute_dag_with_config(&dag, job_id, progress_callback, config)
@@ -236,10 +236,10 @@ impl ExecutionEngine {
         let mut all_skipped: Vec<String> = Vec::new();
 
         for (level_idx, level) in levels.into_iter().enumerate() {
-            eprintln!(
-                "[Executor] Executing level {} with {} operations",
-                level_idx,
-                level.len()
+            tracing::debug!(
+                level = level_idx,
+                operations = level.len(),
+                "Executing level"
             );
 
             let level_result = self
@@ -263,9 +263,10 @@ impl ExecutionEngine {
             // V6: Only stop on critical failures (not skipped operations)
             // Critical failures are those that aren't "destination exists" with skip/rename policy
             if level_result.failed > 0 {
-                eprintln!(
-                    "[Executor] Level {} had {} failures, stopping execution",
-                    level_idx, level_result.failed
+                tracing::warn!(
+                    level = level_idx,
+                    failures = level_result.failed,
+                    "Level had failures, stopping execution"
                 );
                 break;
             }
@@ -315,33 +316,33 @@ impl ExecutionEngine {
 
                 // Mark as in progress
                 if let Err(e) = manager.mark_entry_in_progress(&job_id, entry_id) {
-                    eprintln!("[Executor] Failed to mark in progress: {}", e);
+                    tracing::debug!(error = %e, "Failed to mark in progress");
                 }
 
-                eprintln!(
-                    "[Executor] Executing operation: {}",
-                    operation.description()
+                tracing::debug!(
+                    operation = %operation.description(),
+                    "Executing operation"
                 );
 
                 // Execute the operation
                 match execute_operation(&operation).await {
                     Ok(()) => {
                         if let Err(e) = manager.mark_entry_complete(&job_id, entry_id) {
-                            eprintln!("[Executor] Failed to mark complete: {}", e);
+                            tracing::debug!(error = %e, "Failed to mark complete");
                         }
                         let mut c = completed.lock().await;
                         *c += 1;
-                        eprintln!("[Executor] Operation completed successfully");
+                        tracing::debug!("Operation completed successfully");
                     }
                     Err(err) => {
                         if let Err(e) = manager.mark_entry_failed(&job_id, entry_id, err.clone()) {
-                            eprintln!("[Executor] Failed to mark failed: {}", e);
+                            tracing::debug!(error = %e, "Failed to mark failed");
                         }
                         let mut f = failed.lock().await;
                         *f += 1;
                         let mut e = errors.lock().await;
                         e.push(err.clone());
-                        eprintln!("[Executor] Operation failed: {}", err);
+                        tracing::debug!(error = %err, "Operation failed");
                     }
                 }
             });
@@ -352,7 +353,7 @@ impl ExecutionEngine {
         // Wait for all operations in this level to complete
         for handle in handles {
             if let Err(join_err) = handle.await {
-                eprintln!("[Executor] Task panicked: {}", join_err);
+                tracing::warn!(error = %join_err, "Task panicked");
                 let mut f = failed.lock().await;
                 *f += 1;
                 let mut errs = errors.lock().await;
@@ -409,32 +410,32 @@ impl ExecutionEngine {
 
                 // Mark as in progress
                 if let Err(e) = manager.mark_entry_in_progress(&job_id, entry_id) {
-                    eprintln!("[Executor] Failed to mark in progress: {}", e);
+                    tracing::debug!(error = %e, "Failed to mark in progress");
                 }
 
-                eprintln!(
-                    "[Executor] Executing operation: {}",
-                    operation.description()
+                tracing::debug!(
+                    operation = %operation.description(),
+                    "Executing operation"
                 );
 
                 // Execute the operation with config
                 match execute_operation_with_config(&operation, &config).await {
                     Ok(outcome) => {
                         if let Err(e) = manager.mark_entry_complete(&job_id, entry_id) {
-                            eprintln!("[Executor] Failed to mark complete: {}", e);
+                            tracing::debug!(error = %e, "Failed to mark complete");
                         }
                         match outcome {
                             ExecutionOutcome::Completed => {
                                 let mut c = completed.lock().await;
                                 *c += 1;
-                                eprintln!("[Executor] Operation completed successfully");
+                                tracing::debug!("Operation completed successfully");
                             }
                             ExecutionOutcome::CompletedWithRename(new_path) => {
                                 let mut r = renamed.lock().await;
                                 *r += 1;
-                                eprintln!(
-                                    "[Executor] Operation completed with rename to: {}",
-                                    new_path.display()
+                                tracing::debug!(
+                                    new_path = %new_path.display(),
+                                    "Operation completed with rename"
                                 );
                             }
                             ExecutionOutcome::Skipped(reason) => {
@@ -442,19 +443,19 @@ impl ExecutionEngine {
                                 *s += 1;
                                 let mut sr = skipped_reasons.lock().await;
                                 sr.push(reason.clone());
-                                eprintln!("[Executor] Operation skipped: {}", reason);
+                                tracing::debug!(reason = %reason, "Operation skipped");
                             }
                         }
                     }
                     Err(err) => {
                         if let Err(e) = manager.mark_entry_failed(&job_id, entry_id, err.clone()) {
-                            eprintln!("[Executor] Failed to mark failed: {}", e);
+                            tracing::debug!(error = %e, "Failed to mark failed");
                         }
                         let mut f = failed.lock().await;
                         *f += 1;
                         let mut e = errors.lock().await;
                         e.push(err.clone());
-                        eprintln!("[Executor] Operation failed: {}", err);
+                        tracing::debug!(error = %err, "Operation failed");
                     }
                 }
             });
@@ -465,7 +466,7 @@ impl ExecutionEngine {
         // Wait for all operations in this level to complete
         for handle in handles {
             if let Err(join_err) = handle.await {
-                eprintln!("[Executor] Task panicked: {}", join_err);
+                tracing::warn!(error = %join_err, "Task panicked");
                 let mut f = failed.lock().await;
                 *f += 1;
                 let mut errs = errors.lock().await;

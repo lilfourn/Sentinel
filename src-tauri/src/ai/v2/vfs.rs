@@ -7,6 +7,7 @@
 //! - Rule-based bulk operations
 
 use crate::ai::rules::{RuleEvaluator, VirtualFile, VectorIndex};
+use crate::security::PathValidator;
 use super::local_vector_index::{LocalVectorConfig, LocalVectorIndex};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -158,6 +159,13 @@ impl ShadowVFS {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
+
+            // Security: Skip symlinks to prevent path traversal attacks
+            // and avoid following symlinks to directories outside the root
+            if PathValidator::is_symlink(&path) {
+                tracing::debug!(path = %path.display(), "Skipping symlink during VFS scan");
+                continue;
+            }
 
             if let Ok(vf) = VirtualFile::from_path(&path) {
                 let path_str = path.to_string_lossy().to_string();
@@ -409,10 +417,24 @@ impl ShadowVFS {
 
                 // Handle move operation
                 if let Some(ref dest_folder) = rule.then_move_to {
-                    let dest_path = if dest_folder.starts_with('/') {
-                        PathBuf::from(dest_folder)
-                    } else {
-                        self.root.join(dest_folder)
+                    // Security: Validate destination path using PathValidator
+                    // Disallow absolute paths - all destinations must be relative to root
+                    let dest_path = match PathValidator::validate_destination(
+                        dest_folder,
+                        &self.root,
+                        false, // Disallow absolute paths in organization rules
+                    ) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            // Log warning and skip this rule for this file
+                            tracing::warn!(
+                                rule = %rule.name,
+                                file = %file.path,
+                                error = %e,
+                                "Skipping move operation due to invalid destination"
+                            );
+                            continue;
+                        }
                     };
 
                     // Track folder creation
@@ -433,10 +455,21 @@ impl ShadowVFS {
                     let initial_dest = dest_path.join(&file_name);
                     let initial_dest_str = initial_dest.to_string_lossy().to_string();
 
+                    // Skip if source == destination (file already in correct location)
+                    let source_path = PathBuf::from(&file.path);
+                    if source_path == initial_dest {
+                        continue; // Already at destination, no move needed
+                    }
+
                     let final_dest = if self.destination_registry.contains_key(&initial_dest_str)
                         || initial_dest.exists()
                     {
                         // Collision detected - generate unique destination
+                        tracing::debug!(
+                            source = %file.path,
+                            destination = %initial_dest_str,
+                            "Collision detected, generating unique name"
+                        );
                         let (unique_path, _) = self.generate_unique_destination(&dest_path, &file_name);
                         unique_path
                     } else {

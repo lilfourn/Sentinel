@@ -33,7 +33,10 @@ notify-debouncer-full = "0.4"
 trash = "5"
 
 # HTTP client for AI APIs
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
+
+# Async stream processing for SSE
+futures = "0.3"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -98,6 +101,10 @@ num_cpus = "1.16"
 
 # Cross-platform file locking
 fs2 = "0.4"
+
+# Structured logging with filtering
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # macOS-specific dependencies for NSFileCoordinator
 [target.'cfg(target_os = "macos")'.dependencies]

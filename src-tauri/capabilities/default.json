@@ -19,9 +19,6 @@
     "fs:allow-read-file",
     "fs:allow-read-text-file",
     "fs:allow-stat",
-    "shell:allow-execute",
-    "shell:allow-spawn",
-    "shell:allow-stdin-write",
     "macos-permissions:default"
   ]
 }

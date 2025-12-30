@@ -95,10 +95,10 @@ pub fn resume_journal(job_id: &str) -> Result<RecoveryResult, String> {
         .map_err(|e| e.message)?
         .ok_or_else(|| format!("Journal not found: {}", job_id))?;
 
-    eprintln!(
-        "[Recovery] Resuming journal {} with {} pending entries",
-        job_id,
-        journal.pending_entries().len()
+    tracing::info!(
+        job_id = %job_id,
+        pending = journal.pending_entries().len(),
+        "Resuming interrupted journal"
     );
 
     let mut completed_count = 0;
@@ -121,9 +121,9 @@ pub fn resume_journal(job_id: &str) -> Result<RecoveryResult, String> {
             .ok_or_else(|| format!("Entry not found: {}", entry_id))?
             .clone();
 
-        eprintln!(
-            "[Recovery] Executing operation: {}",
-            entry.operation.description()
+        tracing::debug!(
+            operation = %entry.operation.description(),
+            "Recovery: Executing operation"
         );
 
         // Mark as in progress
@@ -139,7 +139,7 @@ pub fn resume_journal(job_id: &str) -> Result<RecoveryResult, String> {
                     e.mark_complete();
                 }
                 completed_count += 1;
-                eprintln!("[Recovery] Operation completed successfully");
+                tracing::debug!("Recovery: Operation completed successfully");
             }
             Err(err) => {
                 if let Some(e) = journal.get_entry_mut(entry_id) {
@@ -147,7 +147,7 @@ pub fn resume_journal(job_id: &str) -> Result<RecoveryResult, String> {
                 }
                 failed_count += 1;
                 errors.push(err.clone());
-                eprintln!("[Recovery] Operation failed: {}", err);
+                tracing::debug!(error = %err, "Recovery: Operation failed");
             }
         }
 
@@ -182,10 +182,10 @@ pub fn rollback_journal(job_id: &str) -> Result<RecoveryResult, String> {
         .map_err(|e| e.message)?
         .ok_or_else(|| format!("Journal not found: {}", job_id))?;
 
-    eprintln!(
-        "[Recovery] Rolling back journal {} with {} completed entries",
-        job_id,
-        journal.completed_entries().len()
+    tracing::info!(
+        job_id = %job_id,
+        completed = journal.completed_entries().len(),
+        "Rolling back journal"
     );
 
     let mut completed_count = 0;
@@ -208,9 +208,9 @@ pub fn rollback_journal(job_id: &str) -> Result<RecoveryResult, String> {
             .ok_or_else(|| format!("Entry not found: {}", entry_id))?
             .clone();
 
-        eprintln!(
-            "[Recovery] Rolling back operation: {}",
-            entry.undo_operation.description()
+        tracing::debug!(
+            operation = %entry.undo_operation.description(),
+            "Rolling back operation"
         );
 
         // Execute the undo operation
@@ -220,7 +220,7 @@ pub fn rollback_journal(job_id: &str) -> Result<RecoveryResult, String> {
                     e.mark_rolled_back();
                 }
                 completed_count += 1;
-                eprintln!("[Recovery] Rollback completed successfully");
+                tracing::debug!("Rollback completed successfully");
             }
             Err(err) => {
                 // Even if undo fails, mark as rolled back to avoid retry loops
@@ -230,7 +230,7 @@ pub fn rollback_journal(job_id: &str) -> Result<RecoveryResult, String> {
                 }
                 failed_count += 1;
                 errors.push(err.clone());
-                eprintln!("[Recovery] Rollback failed: {}", err);
+                tracing::debug!(error = %err, "Rollback failed");
             }
         }
 

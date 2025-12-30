@@ -1,208 +1,157 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Project Overview
 
-**Sentinel** is a Tauri v2 desktop file manager application with AI-powered file organization capabilities. It combines a modern React 19 frontend with a Rust backend, featuring an agentic AI system that can autonomously explore folder structures and create organization plans.
+**Sentinel** is a Tauri v2 desktop file manager with AI-powered organization. React 19 frontend + Rust backend, featuring agentic AI that explores folders and creates organization plans.
 
-### Key Features
-- File browsing with grid, list, and column views
-- AI-powered file renaming with content analysis
-- Agentic folder organization using Claude's tool-use capabilities
-- Naming convention detection and enforcement
-- Job persistence for crash recovery
-- Real-time AI thought streaming to UI
-- Drag-and-drop file operations
+### Core Features
+- File browsing (grid/list/column views) with drag-and-drop
+- **AI Chat** - Conversational file exploration with Claude (streaming + extended thinking)
+- **Agentic Organization** - Autonomous folder analysis and reorganization
+- **Virtual File System (VFS)** - Preview changes before applying
+- **Write-Ahead Log (WAL)** - Crash recovery and transactional safety
+- **Vector Search** - Semantic file search via local embeddings
 
-## Common Commands
+## Commands
 
 ```bash
-# Development (starts both Vite dev server and Tauri)
-npm run tauri dev
-
-# Build production app
-npm run tauri build
-
-# Frontend only (no Tauri shell)
-npm run dev
-
-# Type check frontend
-npm run build  # runs tsc && vite build
-
-# Rust checks (from src-tauri/)
-cargo check
-cargo build
+npm run tauri dev      # Development (Vite + Tauri)
+npm run tauri build    # Production build
+npm run build          # Type check (tsc && vite build)
+cargo check            # Rust checks (from src-tauri/)
 cargo test
 ```
 
-## Architecture Overview
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Frontend (React)                         │
-├─────────────────────────────────────────────────────────────────┤
-│  Components         │  Stores (Zustand)    │  Hooks             │
-│  - ChangesPanel     │  - navigation-store  │  - useDirectory    │
-│  - FileGridView     │  - selection-store   │  - useAutoRename   │
-│  - SettingsPanel    │  - organize-store    │  - useThumbnail    │
-│  - ContextMenu      │  - settings-store    │  - useSyncedSettings│
-│                     │  - toast-store       │                    │
-└─────────────────────┴──────────────────────┴────────────────────┘
-                              │ invoke()
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Backend (Rust + Tauri)                      │
-├─────────────────────────────────────────────────────────────────┤
-│  Commands              │  AI Module           │  Services        │
-│  - commands/ai.rs      │  - client.rs         │  - thumbnails.rs │
-│  - commands/filesystem │  - tools.rs          │  - watcher       │
-│  - commands/jobs.rs    │  - tool_executor.rs  │                  │
-│                        │  - prompts.rs        │  Jobs            │
-│  Models                │  - naming.rs         │  - mod.rs        │
-│  - FileEntry           │  - json_parser.rs    │  - persistence   │
-│  - DirectoryContents   │  - credentials.rs    │                  │
-│                        │                      │  Security        │
-│                        │                      │  - path_validator│
-└────────────────────────┴──────────────────────┴──────────────────┘
-                              │ HTTP
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Anthropic Claude API                          │
-│         Haiku (fast analysis) │ Sonnet (planning/agentic)       │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                    Frontend (React 19)                       │
+├──────────────────┬──────────────────┬───────────────────────┤
+│ ChatPanel        │ Stores (Zustand) │ Views                 │
+│ - Streaming      │ - chat-store     │ - FileGridView        │
+│ - Tool viz       │ - organize-store │ - FileListView        │
+│ - @mentions      │ - vfs-store      │ - FileColumnsView     │
+│                  │ - ghost-store    │ - DiffView            │
+│ ChangesPanel     │ - navigation     │                       │
+│ - Plan preview   │ - selection      │ Dialogs               │
+│ - Execution      │ - settings       │ - ConfirmDialog       │
+│ - Ghost overlay  │                  │ - ContextMenu         │
+└──────────────────┴──────────────────┴───────────────────────┘
+                            │ invoke()
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   Backend (Rust + Tauri)                     │
+├──────────────────┬──────────────────┬───────────────────────┤
+│ Commands         │ AI Module        │ Infrastructure        │
+│ - chat.rs        │ - chat/agent.rs  │ - vfs/ (simulation)   │
+│ - ai.rs          │ - v2/agent_loop  │ - wal/ (journaling)   │
+│ - filesystem.rs  │ - v2/compression │ - execution/ (DAG)    │
+│ - jobs.rs        │ - v2/tools       │ - vector/ (embeddings)│
+│ - vfs.rs         │ - rules/         │ - tree/ (compression) │
+│ - wal.rs         │ - client.rs      │ - jobs/ (persistence) │
+└──────────────────┴──────────────────┴───────────────────────┘
+                            │ HTTP
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    Anthropic Claude API                      │
+│    Haiku (fast) │ Sonnet (planning) │ Opus (reasoning)      │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ## Frontend (src/)
 
-### Tech Stack
-- **React 19** + **TypeScript** + **Vite 7**
-- **TailwindCSS v4** for styling
-- **Zustand** for state management
-- **TanStack Query** for async data fetching
-- **@tauri-apps/api** for IPC with Rust backend
+**Stack**: React 19, TypeScript, Vite 7, TailwindCSS v4, Zustand, TanStack Query
 
-### State Management (src/stores/)
+### Key Stores
 | Store | Purpose |
 |-------|---------|
-| `navigation-store.ts` | Directory navigation, history, view mode, Quick Look |
-| `selection-store.ts` | File/folder multi-selection with drag support |
-| `organize-store.ts` | AI organization workflow state machine |
-| `settings-store.ts` | User preferences and synced settings |
-| `toast-store.ts` | Toast notifications |
+| `chat-store.ts` | Chat messages, streaming, context items, model selection |
+| `organize-store.ts` | Organization workflow state machine, plan execution |
+| `vfs-store.ts` | Virtual filesystem preview state |
+| `ghost-store.ts` | Ghost animations for file operation previews |
+| `navigation-store.ts` | Directory navigation, history, view mode |
+| `selection-store.ts` | Multi-file selection |
 
-### Key Components
-- `ChangesPanel.tsx` - Real-time AI thought stream display
-- `FileGridView/FileListView/FileColumnsView.tsx` - File browsing views
-- `ContextMenu.tsx` - Right-click context menu with AI actions
-- `SettingsPanel.tsx` - API key configuration and preferences
+### Chat System (`src/components/ChatPanel/`)
+- **ChatInput** - Model selector (Haiku/Sonnet/Opus), @mention support
+- **MessageItem** - Extended thinking display, tool visualization
+- **ThoughtAccordion** - Shows agent tool calls (search, read, inspect)
+- **MentionPopover** - File/folder picker with context strategies
+- **ContextStack** - Shows active file/folder context
 
 ## Backend (src-tauri/)
 
 ### Module Structure
 ```
 src-tauri/src/
-├── commands/           # Tauri command handlers
-│   ├── ai.rs          # AI-related commands
-│   ├── filesystem.rs  # File operations
-│   ├── jobs.rs        # Job persistence commands
-│   └── watcher.rs     # Directory watching
-├── ai/                 # AI integration module
-│   ├── client.rs      # Anthropic API client
-│   ├── tools.rs       # Tool definitions for agentic loop
-│   ├── tool_executor.rs # Safe tool execution
-│   ├── prompts.rs     # System and user prompts
-│   ├── naming.rs      # Naming convention types
-│   ├── json_parser.rs # Robust JSON extraction
-│   └── credentials.rs # API key storage
-├── jobs/               # Job persistence
-│   └── mod.rs         # OrganizeJob state machine
-├── models/             # Shared data structures
-├── services/           # Background services
-└── security/           # Path validation
+├── commands/        # Tauri command handlers (chat, ai, filesystem, vfs, wal, jobs)
+├── ai/
+│   ├── chat/        # ReAct agent for Q&A (streaming, extended thinking)
+│   ├── v2/          # Organize agent (map-reduce, hologram compression)
+│   └── rules/       # DSL rule parser and evaluator
+├── vfs/             # Virtual filesystem simulation
+├── wal/             # Write-ahead log for crash recovery
+├── execution/       # DAG-based parallel execution
+├── vector/          # Local embeddings via fastembed
+├── tree/            # XML tree compression
+└── jobs/            # Job persistence
 ```
 
-### Key Tauri Commands
-
-**Filesystem Operations:**
-- `read_directory` - Read directory contents with metadata
-- `rename_file` - Rename a file/folder
-- `delete_to_trash` - Move to trash (reversible)
-- `move_file` - Move file to new location
-- `copy_file` - Copy file to new location
-- `create_directory` - Create new folder
-
-**AI Operations:**
-- `set_api_key` - Validate and store API key
-- `get_rename_suggestion` - AI-powered file renaming
-- `suggest_naming_conventions` - Analyze folder naming patterns
-- `generate_organize_plan_agentic` - Full agentic organization
-- `generate_organize_plan_with_convention` - Organize with naming style
-
-**Job Persistence:**
-- `start_organize_job` - Begin tracking organization job
-- `set_job_plan` - Store generated plan
-- `complete_job_operation` - Mark operation done
-- `check_interrupted_job` - Recovery on app startup
+### Key Commands
+| Category | Commands |
+|----------|----------|
+| **Chat** | `chat_stream`, `abort_chat`, `list_files_for_mention` |
+| **AI Organize** | `generate_organize_plan_agentic`, `get_rename_suggestion` |
+| **VFS** | `vfs_simulate_plan`, `vfs_list_dir`, `vfs_search_content` |
+| **WAL** | `wal_check_recovery`, `wal_resume_job`, `wal_execute_journal` |
+| **Execution** | `execute_plan_parallel` (DAG-based) |
 
 ## AI Integration
 
-### Claude Models Used
-| Model | Use Case | Max Tokens |
-|-------|----------|------------|
-| Claude 4.5 Haiku | Fast context analysis, naming conventions | 500-1024 |
-| Claude 4.5 Sonnet | Rename suggestions, agentic planning | 100-4096 |
+### Models
+| Model | Use Case |
+|-------|----------|
+| Claude Haiku 4.5 | Fast analysis, naming conventions, exploration |
+| Claude Sonnet 4.5 | Planning, organization, tool use |
+| Claude Opus 4.5 | Extended thinking, complex reasoning |
 
-### Agentic Organization Flow
-The agent uses tool-use to autonomously explore folders before planning:
+### Chat Agent (ReAct Loop)
+- Max 8 iterations with 500ms rate limiting
+- Extended thinking (128K token budget)
+- Tools: `search_hybrid`, `read_file`, `inspect_pattern`, `list_directory`
+- Streaming via Tauri events: `chat:token`, `chat:thinking`, `chat:thought`
 
-1. **Exploration Phase**: Agent runs `ls`, `grep`, `find`, `cat` commands
-2. **Analysis Phase**: Understands file structure and patterns
-3. **Planning Phase**: Calls `submit_plan` tool with operations
-4. **Execution Phase**: Frontend executes operations sequentially
+### Organize Agent (V2/V4/V5)
+Three modes based on folder size:
+1. **Full Tree** (<300 files) - Complete compressed tree
+2. **Map-Reduce** (300-5000 files) - Rule-based iteration until 95% coverage
+3. **Hologram** (pattern-heavy) - Adaptive pattern folding (85-94% token savings)
 
-See `AGENT.md` for detailed agent documentation.
+Features: Prompt caching, model escalation (Haiku→Sonnet), rate limiting
 
-### Credentials Storage
-- **Primary**: OS keychain via `keyring` crate
-- **Fallback**: File-based storage at `~/.config/sentinel/anthropic_key`
-- API keys are validated before storage
+## Event System
+
+| Event | Purpose |
+|-------|---------|
+| `chat:token` | Streaming response content |
+| `chat:thinking` | Extended thinking updates |
+| `chat:thought` | Tool execution steps |
+| `ai-thought` | Organize agent progress |
+| `execution-progress` | Plan execution updates |
 
 ## Type Sharing
-
-Frontend types in `src/types/file.ts` mirror Rust structs in `src-tauri/src/models/`. When modifying data structures, update both:
 
 | Frontend | Backend |
 |----------|---------|
 | `src/types/file.ts` | `src-tauri/src/models/mod.rs` |
 | `src/stores/organize-store.ts` | `src-tauri/src/jobs/mod.rs` |
-| `src/types/naming-convention.ts` | `src-tauri/src/ai/naming.rs` |
-
-## Important Patterns
-
-### Event Emission
-The backend emits `ai-thought` events for real-time UI updates:
-```rust
-app_handle.emit("ai-thought", json!({
-    "type": "thinking",
-    "content": "Analyzing files..."
-}));
-```
-
-### Job Persistence
-Organization jobs are persisted to `~/.config/sentinel/current_job.json`:
-- Allows recovery from crashes mid-organization
-- Tracks completed operations for resume capability
-
-### Path Security
-All paths are validated through `PathValidator`:
-- Prevents directory traversal attacks
-- Protects system directories
-- Handles macOS special characters safely
+| `src/types/vfs.ts` | `src-tauri/src/vfs/mod.rs` |
 
 ## Development Tips
 
-1. **API Key Setup**: Set Anthropic API key in Settings panel before using AI features
-2. **Debugging AI**: Check terminal for `[AgenticLoop]` and `[AI]` prefixed logs
-3. **Job Recovery**: Interrupted jobs show recovery banner on app startup
-4. **Type Changes**: Update both frontend and backend when modifying shared types
+1. **API Key**: Set in Settings panel before using AI features
+2. **Debug AI**: Check terminal for `[AgenticLoop]`, `[AI]`, `[ChatAgent]` logs
+3. **Streaming**: Chat uses SSE parsing; organize uses JSON responses
+4. **Recovery**: Interrupted jobs show recovery banner on startup
+5. **VFS Preview**: Changes simulated in virtual filesystem before execution

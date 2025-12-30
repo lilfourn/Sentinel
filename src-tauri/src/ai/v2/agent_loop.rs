@@ -23,6 +23,7 @@ use crate::ai::credentials::CredentialManager;
 use crate::jobs::OrganizePlan;
 
 use super::analytics::DigestGenerator;
+use super::architect::{self, Blueprint};
 use super::compression;
 use super::prompts::{
     build_v2_summary_context, build_v3_initial_context, build_v4_sampled_context,
@@ -269,14 +270,32 @@ where
 
     eprintln!("[AgentLoop] File count: {}, using {} mode", file_count, mode_str);
 
+    // V6: Run Architect phase to generate Blueprint from user instruction
+    // This designs the high-level organization strategy before any agent loops
+    let blueprint = architect::run_architect(
+        target_folder,
+        user_request,
+        &vfs,
+        &event_emitter,
+    ).await?;
+
+    // Embed Blueprint folder descriptions for vector matching in Builder phase
+    let blueprint = architect::embed_blueprint(&blueprint, &vfs)?;
+
+    eprintln!(
+        "[AgentLoop] Blueprint created: {} with {} folders",
+        blueprint.strategy_name,
+        blueprint.structure.len()
+    );
+
     // V5: For pattern-heavy large folders, use hologram compression
     if use_hologram {
-        return run_v5_hologram_loop(target_folder, user_request, &event_emitter, &mut vfs).await;
+        return run_v5_hologram_loop_with_blueprint(target_folder, user_request, &event_emitter, &mut vfs, &blueprint).await;
     }
 
     // V4: For large folders without patterns, use sampling mode
     if use_sampling {
-        return run_v4_sampled_loop(target_folder, user_request, &event_emitter, &mut vfs).await;
+        return run_v4_sampled_loop_with_blueprint(target_folder, user_request, &event_emitter, &mut vfs, &blueprint).await;
     }
 
     // 2. Generate FolderDigest for rich analytics (V3 - for small folders)
@@ -314,12 +333,19 @@ where
         compressed_tree.len()
     );
 
-    // 4. Build V3 initial context with digest
+    // 4. Build V3 initial context with digest and Blueprint
+    // V6: Enrich user request with Blueprint context for full tree mode
+    let enriched_request = format!(
+        "{}{}",
+        user_request,
+        format_blueprint_context(&blueprint)
+    );
+
     let initial_context = build_v3_initial_context(
         &target_folder.to_string_lossy(),
         &compressed_tree,
         &digest,
-        user_request,
+        &enriched_request,
     );
 
     // 5. Initialize conversation
@@ -704,11 +730,7 @@ where
         let organized = vfs.organized_count();
         let unmatched_count = file_count - organized;
 
-        event_emitter("thinking", &format!("Coverage: {:.1}%", coverage * 100.0), Some(vec![
-            ExpandableDetail { label: "Organized".to_string(), value: organized.to_string() },
-            ExpandableDetail { label: "Remaining".to_string(), value: unmatched_count.to_string() },
-            ExpandableDetail { label: "Iteration".to_string(), value: (iteration + 1).to_string() },
-        ]));
+        event_emitter("thinking", "Analyzing files...", None);
 
         if vfs.coverage_target_reached() {
             eprintln!("[V4SampledLoop] Coverage target reached: {:.1}%", coverage * 100.0);
@@ -1051,24 +1073,7 @@ where
         let coverage = vfs.coverage();
         let organized = vfs.organized_count();
 
-        event_emitter(
-            "thinking",
-            &format!("Coverage: {:.1}%", coverage * 100.0),
-            Some(vec![
-                ExpandableDetail {
-                    label: "Organized".to_string(),
-                    value: organized.to_string(),
-                },
-                ExpandableDetail {
-                    label: "Remaining".to_string(),
-                    value: (file_count - organized).to_string(),
-                },
-                ExpandableDetail {
-                    label: "Iteration".to_string(),
-                    value: (iteration + 1).to_string(),
-                },
-            ]),
-        );
+        event_emitter("thinking", "Analyzing files...", None);
 
         if vfs.coverage_target_reached() {
             eprintln!("[V5HologramLoop] Coverage target reached: {:.1}%", coverage * 100.0);
@@ -1275,6 +1280,88 @@ where
         file_count,
         hologram.stats.pattern_count
     ))
+}
+
+// ============================================================================
+// V6 Blueprint-Aware Wrappers
+// ============================================================================
+
+/// Format Blueprint as additional context for the user request
+fn format_blueprint_context(blueprint: &Blueprint) -> String {
+    let mut context = String::new();
+
+    context.push_str("\n\n## Organization Blueprint (from Architect)\n\n");
+    context.push_str(&format!("**Strategy**: {}\n\n", blueprint.strategy_name));
+
+    context.push_str("**Target Structure**:\n");
+    for folder in &blueprint.structure {
+        context.push_str(&format!(
+            "- `{}` - {}\n",
+            folder.path, folder.semantic_description
+        ));
+    }
+
+    context.push_str(&format!(
+        "\n**Extraction Rules**:\n```\n{}\n```\n",
+        blueprint.extraction_rules
+    ));
+
+    context.push_str("\n**Important**: Follow this Blueprint when creating organization rules. ");
+    context.push_str("Use the target folders defined above.\n");
+
+    context
+}
+
+/// V6 Blueprint-aware wrapper for V4 sampled loop
+async fn run_v4_sampled_loop_with_blueprint<F>(
+    target_folder: &Path,
+    user_request: &str,
+    event_emitter: &F,
+    vfs: &mut ShadowVFS,
+    blueprint: &Blueprint,
+) -> Result<OrganizePlan, String>
+where
+    F: Fn(&str, &str, Option<Vec<ExpandableDetail>>),
+{
+    // Enrich user request with Blueprint context
+    let enriched_request = format!(
+        "{}{}",
+        user_request,
+        format_blueprint_context(blueprint)
+    );
+
+    eprintln!(
+        "[V6] Running V4 sampled loop with Blueprint: {}",
+        blueprint.strategy_name
+    );
+
+    run_v4_sampled_loop(target_folder, &enriched_request, event_emitter, vfs).await
+}
+
+/// V6 Blueprint-aware wrapper for V5 hologram loop
+async fn run_v5_hologram_loop_with_blueprint<F>(
+    target_folder: &Path,
+    user_request: &str,
+    event_emitter: &F,
+    vfs: &mut ShadowVFS,
+    blueprint: &Blueprint,
+) -> Result<OrganizePlan, String>
+where
+    F: Fn(&str, &str, Option<Vec<ExpandableDetail>>),
+{
+    // Enrich user request with Blueprint context
+    let enriched_request = format!(
+        "{}{}",
+        user_request,
+        format_blueprint_context(blueprint)
+    );
+
+    eprintln!(
+        "[V6] Running V5 hologram loop with Blueprint: {}",
+        blueprint.strategy_name
+    );
+
+    run_v5_hologram_loop(target_folder, &enriched_request, event_emitter, vfs).await
 }
 
 #[cfg(test)]

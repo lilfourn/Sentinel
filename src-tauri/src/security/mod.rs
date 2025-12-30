@@ -1,7 +1,12 @@
+pub mod command_sandbox;
 pub mod cycle_detection;
+pub mod regex_validator;
 
 use regex::Regex;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+
+pub use command_sandbox::{AllowedCommand, CommandSandbox, CommandSandboxError};
+pub use regex_validator::{safe_regex, validate_regex_complexity, RegexValidationError};
 
 /// Security validator for path operations
 pub struct PathValidator;
@@ -101,6 +106,228 @@ impl PathValidator {
             }
         }
 
+        Ok(())
+    }
+
+    /// Validate a path for reading operations
+    ///
+    /// Ensures the path:
+    /// - Exists
+    /// - Is not a protected system path
+    /// - Is within the optional boundary directory (if specified)
+    ///
+    /// # Arguments
+    /// * `path` - The path to validate
+    /// * `boundary` - Optional directory that the path must be contained within
+    ///
+    /// # Returns
+    /// * `Ok(PathBuf)` - The canonicalized, validated path
+    /// * `Err(String)` - Error message if validation fails
+    pub fn validate_for_read(path: &Path, boundary: Option<&Path>) -> Result<PathBuf, String> {
+        // Canonicalize to resolve .. and symlinks
+        let canonical = path
+            .canonicalize()
+            .map_err(|_| format!("Path does not exist or cannot be resolved: {}", path.display()))?;
+
+        // Check protected paths
+        if Self::is_protected_path(&canonical) {
+            return Err(format!(
+                "Access to protected path denied: {}",
+                canonical.display()
+            ));
+        }
+
+        // If boundary specified, ensure path is within it
+        if let Some(boundary) = boundary {
+            let boundary_canonical = boundary
+                .canonicalize()
+                .map_err(|_| format!("Boundary path invalid: {}", boundary.display()))?;
+
+            if !canonical.starts_with(&boundary_canonical) {
+                return Err(format!(
+                    "Path traversal detected: {} escapes boundary {}",
+                    canonical.display(),
+                    boundary_canonical.display()
+                ));
+            }
+        }
+
+        Ok(canonical)
+    }
+
+    /// Validate a path for write/move operations (stricter than read)
+    ///
+    /// For write operations, the parent directory must exist even if the target
+    /// file doesn't exist yet.
+    ///
+    /// # Arguments
+    /// * `path` - The target path for writing
+    /// * `boundary` - Optional directory that the path must be contained within
+    ///
+    /// # Returns
+    /// * `Ok(PathBuf)` - The validated path (canonicalized where possible)
+    /// * `Err(String)` - Error message if validation fails
+    pub fn validate_for_write(path: &Path, boundary: Option<&Path>) -> Result<PathBuf, String> {
+        // For writes, parent must exist even if file doesn't yet
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("Invalid path: no parent directory: {}", path.display()))?;
+
+        let parent_canonical = parent
+            .canonicalize()
+            .map_err(|_| format!("Parent directory does not exist: {}", parent.display()))?;
+
+        if Self::is_protected_path(&parent_canonical) {
+            return Err(format!(
+                "Cannot write to protected path: {}",
+                parent_canonical.display()
+            ));
+        }
+
+        // Boundary check on parent
+        if let Some(boundary) = boundary {
+            let boundary_canonical = boundary
+                .canonicalize()
+                .map_err(|_| format!("Boundary path invalid: {}", boundary.display()))?;
+
+            if !parent_canonical.starts_with(&boundary_canonical) {
+                return Err(format!(
+                    "Path traversal detected: {} escapes boundary {}",
+                    parent_canonical.display(),
+                    boundary_canonical.display()
+                ));
+            }
+        }
+
+        // Return the path with canonicalized parent + original filename
+        let filename = path.file_name().unwrap_or_default();
+        Ok(parent_canonical.join(filename))
+    }
+
+    /// Validate a destination path for organization rules
+    ///
+    /// This is specifically for validating `then_move_to` destinations in
+    /// organization rules, where we need to ensure the destination doesn't
+    /// escape the root directory.
+    ///
+    /// # Arguments
+    /// * `dest` - The destination path string (may be relative or absolute)
+    /// * `root` - The root directory that all operations must stay within
+    /// * `allow_absolute` - Whether to allow absolute paths
+    ///
+    /// # Returns
+    /// * `Ok(PathBuf)` - The validated, normalized destination path
+    /// * `Err(String)` - Error message if validation fails
+    pub fn validate_destination(
+        dest: &str,
+        root: &Path,
+        allow_absolute: bool,
+    ) -> Result<PathBuf, String> {
+        let dest_path = if dest.starts_with('/') {
+            if !allow_absolute {
+                return Err(format!(
+                    "Absolute paths not allowed in destination: {}",
+                    dest
+                ));
+            }
+            PathBuf::from(dest)
+        } else {
+            root.join(dest)
+        };
+
+        // Normalize the path to resolve .. without requiring existence
+        let normalized = Self::normalize_path(&dest_path)?;
+
+        // Get the canonical root (must exist)
+        let root_canonical = root
+            .canonicalize()
+            .map_err(|_| format!("Root path invalid: {}", root.display()))?;
+
+        // Check the normalized path doesn't escape root
+        // We need to compare the normalized path against root
+        if !normalized.starts_with(&root_canonical) {
+            return Err(format!(
+                "Destination escapes root directory: {} is not under {}",
+                normalized.display(),
+                root_canonical.display()
+            ));
+        }
+
+        // Check against protected paths
+        if Self::is_protected_path(&normalized) {
+            return Err(format!(
+                "Cannot use protected path as destination: {}",
+                normalized.display()
+            ));
+        }
+
+        Ok(normalized)
+    }
+
+    /// Normalize a path by resolving . and .. components without requiring
+    /// the path to exist.
+    ///
+    /// This is useful for validating destination paths that may not exist yet.
+    fn normalize_path(path: &Path) -> Result<PathBuf, String> {
+        let mut normalized = PathBuf::new();
+
+        for component in path.components() {
+            match component {
+                Component::ParentDir => {
+                    // Pop the last component, but not past root
+                    if !normalized.pop() {
+                        // If we can't pop, we're trying to go above root
+                        return Err(format!(
+                            "Path traversal: too many parent references in {}",
+                            path.display()
+                        ));
+                    }
+                }
+                Component::CurDir => {
+                    // Skip . components
+                }
+                Component::Normal(name) => {
+                    normalized.push(name);
+                }
+                Component::RootDir => {
+                    normalized.push(Component::RootDir);
+                }
+                Component::Prefix(prefix) => {
+                    normalized.push(prefix.as_os_str());
+                }
+            }
+        }
+
+        Ok(normalized)
+    }
+
+    /// Check if a path is a symlink
+    ///
+    /// Uses `symlink_metadata` to check without following the link.
+    pub fn is_symlink(path: &Path) -> bool {
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) => meta.is_symlink(),
+            Err(_) => false,
+        }
+    }
+
+    /// Ensure a path is not a symlink
+    ///
+    /// # Arguments
+    /// * `path` - The path to check
+    /// * `operation` - Description of the operation for error messages
+    ///
+    /// # Returns
+    /// * `Ok(())` if not a symlink
+    /// * `Err(String)` if it is a symlink
+    pub fn ensure_not_symlink(path: &Path, operation: &str) -> Result<(), String> {
+        if Self::is_symlink(path) {
+            return Err(format!(
+                "Refusing to {} symlink: {}",
+                operation,
+                path.display()
+            ));
+        }
         Ok(())
     }
 }

@@ -1,10 +1,15 @@
-//! V3 AI module with semantic, rule-based file organization.
+//! V6 AI module with semantic, rule-based file organization.
 //!
-//! This module upgrades V2 with:
+//! This module provides:
+//! - **Architect-Builder pattern**: High-level planning with Blueprint-guided execution
 //! - **Prompt caching**: 90% token reduction via Anthropic cache_control
 //! - **LocalVectorIndex**: Real semantic search using fastembed embeddings
 //! - **Header-based rate limiting**: Dynamic delays based on API quota
 //! - **FolderDigest**: Rich pre-computed analytics for one-shot planning
+//!
+//! V6 Features (new):
+//! - **Architect module**: Generates Blueprint from user instruction + semantic sample
+//! - **Builder module**: Tiered file matching (vector first, LLM fallback)
 //!
 //! Tools available to the agent:
 //! - `query_semantic_index`: Search files by semantic similarity
@@ -15,6 +20,8 @@
 #![allow(dead_code)]
 
 mod analytics;
+pub mod architect;
+pub mod builder;
 pub mod compression;
 mod local_vector_index;
 mod prompts;
@@ -28,5 +35,7 @@ pub mod agent_loop;
 // Public exports
 pub use agent_loop::{run_v2_agentic_organize, ExpandableDetail};
 pub use analytics::{ContentPreview, DigestGenerator, FolderDigest, SemanticTag};
+pub use architect::{Blueprint, BlueprintFolder};
+pub use builder::{BatchMatchResult, MatchResult};
 pub use local_vector_index::{LocalVectorConfig, LocalVectorIndex};
 pub use rate_limiter::{RateLimitManager, RateLimitState};

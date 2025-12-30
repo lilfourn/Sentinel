@@ -14,9 +14,20 @@ mod wal;
 
 use commands::*;
 use services::watcher::create_watcher_handle;
+use tracing_subscriber::EnvFilter;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Initialize tracing with RUST_LOG env filter
+    // Default: warn for most crates, info for our app (job summaries visible)
+    // Use RUST_LOG=debug for verbose per-operation logs
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("warn,tauri_app_lib=info")),
+        )
+        .init();
+
     let watcher_handle = create_watcher_handle();
     let vector_state = VectorState::default();
     let tree_state = TreeState::default();

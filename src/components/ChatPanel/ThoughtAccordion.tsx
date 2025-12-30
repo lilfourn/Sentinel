@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronDown, ChevronRight, Loader2, CheckCircle, AlertCircle, Search, FileText, FolderOpen, List } from 'lucide-react';
+import { ChevronDown, ChevronRight, Loader2, CheckCircle, AlertCircle, Search, FileText, FolderOpen, List, Terminal } from 'lucide-react';
 import type { ThoughtStep } from '../../stores/chat-store';
 
 interface ThoughtAccordionProps {
@@ -11,7 +11,12 @@ const TOOL_ICONS: Record<string, React.ReactNode> = {
   read_file: <FileText size={12} />,
   inspect_pattern: <FolderOpen size={12} />,
   list_directory: <List size={12} />,
+  bash: <Terminal size={12} />,
+  grep: <Search size={12} />,
 };
+
+// Terminal tools get special styling
+const TERMINAL_TOOLS = ['bash', 'grep'];
 
 function StatusIcon({ status }: { status: ThoughtStep['status'] }) {
   switch (status) {
@@ -29,7 +34,33 @@ function StatusIcon({ status }: { status: ThoughtStep['status'] }) {
 function ThoughtItem({ thought }: { thought: ThoughtStep }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const hasOutput = thought.output && thought.output.length > 0;
+  const isTerminal = TERMINAL_TOOLS.includes(thought.tool);
 
+  // Terminal-style display for bash/grep
+  if (isTerminal) {
+    return (
+      <div className="border-l-2 border-green-500/50 pl-2 py-1">
+        {/* Command header with $ prompt */}
+        <div className="flex items-center gap-2 text-xs">
+          <StatusIcon status={thought.status} />
+          <span className="text-green-500 font-mono font-bold">$</span>
+          <code className="text-gray-300 font-mono truncate flex-1">
+            {thought.input.slice(0, 80)}
+            {thought.input.length > 80 && '...'}
+          </code>
+        </div>
+
+        {/* Output (always show for terminal commands when available) */}
+        {hasOutput && (
+          <div className="mt-1 ml-4 p-2 bg-gray-950 rounded text-xs font-mono text-gray-300 whitespace-pre-wrap overflow-x-auto max-h-48 overflow-y-auto">
+            {thought.output}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Standard tool display
   return (
     <div className="border-l-2 border-gray-300 dark:border-gray-600 pl-2 py-1">
       <button

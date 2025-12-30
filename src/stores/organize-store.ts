@@ -117,7 +117,11 @@ interface OrganizeState {
   hasInterruptedJob: boolean;
   interruptedJob: InterruptedJobInfo | null;
 
-  // Naming convention selection state
+  // V6: User instruction for deep organization
+  userInstruction: string;
+  awaitingInstruction: boolean;
+
+  // Naming convention selection state (deprecated - kept for compatibility)
   awaitingConventionSelection: boolean;
   suggestedConventions: NamingConvention[] | null;
   selectedConvention: NamingConvention | null;
@@ -165,7 +169,11 @@ interface OrganizeActions {
   resumeInterruptedJob: () => Promise<void>;
   rollbackInterruptedJob: () => Promise<void>;
 
-  // Naming convention actions
+  // V6: User instruction actions
+  setUserInstruction: (instruction: string) => void;
+  submitInstruction: () => Promise<void>;
+
+  // Naming convention actions (deprecated - kept for compatibility)
   selectConvention: (convention: NamingConvention) => void;
   skipConventionSelection: () => void;
 
@@ -264,6 +272,8 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
   currentOpIndex: -1,
   hasInterruptedJob: false,
   interruptedJob: null,
+  userInstruction: '',
+  awaitingInstruction: false,
   awaitingConventionSelection: false,
   suggestedConventions: null,
   selectedConvention: null,
@@ -289,8 +299,8 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
 
   clearThoughts: () => set({ thoughts: [], currentPhase: 'scanning' }),
 
-  // Start automatic organize flow with thinking stream
-  // Phase 1: Scan folder and get naming convention suggestions
+  // Start organize flow - V6: Wait for user instruction
+  // Opens the panel and waits for user to provide organization instructions
   startOrganize: async (folderPath: string) => {
     const state = get();
     state.clearThoughts();
@@ -305,78 +315,32 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
       jobId = `local-${Date.now()}`;
     }
 
+    const folderName = folderPath.split('/').pop() || 'folder';
+
+    // V6: Open panel and wait for user instruction
     set({
       isOpen: true,
       targetFolder: folderPath,
       currentJobId: jobId,
       currentPlan: null,
-      isAnalyzing: true,
+      isAnalyzing: false,
       analysisError: null,
       isExecuting: false,
       executedOps: [],
       failedOp: null,
       currentOpIndex: -1,
+      userInstruction: '',
+      awaitingInstruction: true,
       awaitingConventionSelection: false,
       suggestedConventions: null,
       selectedConvention: null,
       conventionSkipped: false,
+      phase: 'idle',
     });
 
-    const folderName = folderPath.split('/').pop() || 'folder';
+    state.addThought('scanning', `Ready to organize ${folderName}`, 'Provide instructions to begin');
 
-    try {
-      // Phase 1: Scanning
-      state.addThought('scanning', `Scanning ${folderName}...`, 'Agent is exploring folder structure');
-
-      // Set up event listener for streaming thoughts from Rust
-      let unlisten: UnlistenFn | null = null;
-      try {
-        unlisten = await listen<{ type: string; content: string; detail?: string; expandableDetails?: ThoughtDetail[] }>('ai-thought', (event) => {
-          const { type, content, detail, expandableDetails } = event.payload;
-          get().addThought(type as ThoughtType, content, detail, expandableDetails);
-        });
-      } catch {
-        // Event listener failed, continue without it
-      }
-
-      // Get naming convention suggestions
-      state.addThought('analyzing', 'Analyzing naming patterns...', 'Detecting existing file conventions');
-
-      const suggestions = await invoke<NamingConventionSuggestions>('suggest_naming_conventions', {
-        folderPath,
-      });
-
-      // Clean up listener
-      if (unlisten) unlisten();
-
-      // Pause for user selection
-      state.addThought('naming_conventions', 'Select a naming convention',
-        `Found ${suggestions.suggestions.length} patterns`);
-
-      set({
-        isAnalyzing: false,
-        awaitingConventionSelection: true,
-        suggestedConventions: suggestions.suggestions,
-        currentPhase: 'naming_conventions',
-      });
-
-      // Flow continues when user calls selectConvention() or skipConventionSelection()
-
-    } catch (error) {
-      state.addThought('error', 'Analysis failed', String(error));
-
-      // Persist error
-      const jobId = get().currentJobId;
-      if (jobId && !jobId.startsWith('local-')) {
-        invoke('fail_organize_job', { jobId, error: String(error) }).catch(console.error);
-      }
-
-      set({
-        isAnalyzing: false,
-        analysisError: String(error),
-        phase: 'failed',
-      });
-    }
+    // Flow continues when user calls submitInstruction()
   },
 
   closeOrganizer: () => {
@@ -395,6 +359,8 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
       failedOp: null,
       currentOpIndex: -1,
       executionProgress: null,
+      userInstruction: '',
+      awaitingInstruction: false,
       awaitingConventionSelection: false,
       suggestedConventions: null,
       selectedConvention: null,
@@ -545,7 +511,127 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
     }
   },
 
-  // Select a naming convention and continue with plan generation
+  // V6: Set user instruction
+  setUserInstruction: (instruction: string) => {
+    set({ userInstruction: instruction });
+  },
+
+  // V6: Submit instruction and start plan generation
+  submitInstruction: async () => {
+    const { targetFolder, userInstruction } = get();
+
+    if (!targetFolder) return;
+    if (!userInstruction.trim()) {
+      get().addThought('error', 'Please provide organization instructions', 'Instructions are required');
+      return;
+    }
+
+    set({
+      awaitingInstruction: false,
+      isAnalyzing: true,
+      phase: 'indexing',
+    });
+
+    const folderName = targetFolder.split('/').pop() || 'folder';
+    get().addThought('scanning', `Analyzing ${folderName}...`, 'Using your instructions to design organization');
+
+    try {
+      // Set up event listener for streaming thoughts from Rust
+      let unlisten: UnlistenFn | null = null;
+      try {
+        unlisten = await listen<{ type: string; content: string; detail?: string; expandableDetails?: ThoughtDetail[] }>('ai-thought', (event) => {
+          const { type, content, detail, expandableDetails } = event.payload;
+          get().addThought(type as ThoughtType, content, detail, expandableDetails);
+        });
+      } catch {
+        // Event listener failed, continue without it
+      }
+
+      // V6: Call the agentic organize with user instruction
+      const rawPlan = await invoke<OrganizePlan>('generate_organize_plan_agentic', {
+        folderPath: targetFolder,
+        userRequest: userInstruction,
+      });
+
+      // Clean up listener
+      if (unlisten) unlisten();
+
+      // Defensive validation of plan structure
+      if (!rawPlan) {
+        throw new Error('No plan returned from AI agent');
+      }
+      if (!rawPlan.operations) {
+        throw new Error('Plan missing operations array');
+      }
+      if (!Array.isArray(rawPlan.operations)) {
+        throw new Error('Operations is not an array');
+      }
+
+      // Add risk levels to operations (backend doesn't include them)
+      const plan = addRiskLevels(rawPlan);
+
+      // Handle "already organized" case (0 operations)
+      if (plan.operations.length === 0) {
+        get().addThought('complete', 'Folder is already well organized!', plan.description || 'No changes needed');
+        set({
+          currentPlan: plan,
+          isAnalyzing: false,
+          isExecuting: false,
+          phase: 'complete',
+        });
+
+        // Mark job as complete since nothing to do
+        const jobId = get().currentJobId;
+        if (jobId && !jobId.startsWith('local-')) {
+          invoke('complete_organize_job', { jobId }).catch(console.error);
+          setTimeout(() => invoke('clear_organize_job').catch(console.error), 1000);
+        }
+        return;
+      }
+
+      get().addThought('planning', `Plan ready: ${plan.operations.length} operations`, plan.description);
+
+      // Persist the plan to job state
+      const currentJobId = get().currentJobId;
+      if (currentJobId && !currentJobId.startsWith('local-')) {
+        try {
+          await invoke('set_job_plan', {
+            jobId: currentJobId,
+            planId: plan.planId,
+            description: plan.description,
+            operations: plan.operations,
+            targetFolder: plan.targetFolder,
+          });
+        } catch (e) {
+          console.error('[Organize] Failed to persist plan:', e);
+        }
+      }
+
+      // V6: Set phase to simulation for user approval
+      set({
+        currentPlan: plan,
+        isAnalyzing: false,
+        phase: 'simulation',
+      });
+
+    } catch (error) {
+      get().addThought('error', 'Organization failed', String(error));
+
+      // Persist error
+      const jobId = get().currentJobId;
+      if (jobId && !jobId.startsWith('local-')) {
+        invoke('fail_organize_job', { jobId, error: String(error) }).catch(console.error);
+      }
+
+      set({
+        isAnalyzing: false,
+        analysisError: String(error),
+        phase: 'failed',
+      });
+    }
+  },
+
+  // Select a naming convention and continue with plan generation (deprecated)
   selectConvention: (convention: NamingConvention) => {
     set({
       selectedConvention: convention,

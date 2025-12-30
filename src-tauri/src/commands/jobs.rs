@@ -1,5 +1,6 @@
 use crate::execution::{ConflictPolicy, ExecutionConfig, ExecutionEngine, ExecutionResult, ProgressCallback};
 use crate::jobs::{JobManager, JobStatus, OrganizeJob, OrganizeOperation, OrganizePlan};
+use crate::security::PathValidator;
 use crate::wal::entry::{WALJournal, WALOperationType};
 use crate::wal::journal::WALManager;
 use std::path::PathBuf;
@@ -9,6 +10,15 @@ use tauri::{AppHandle, Emitter};
 /// Start a new organize job
 #[tauri::command]
 pub fn start_organize_job(target_folder: String) -> Result<OrganizeJob, String> {
+    // Security: Validate the target folder path
+    let target_path = PathBuf::from(&target_folder);
+    let validated_path = PathValidator::validate_for_read(&target_path, None)
+        .map_err(|e| format!("Invalid target folder: {}", e))?;
+
+    if !validated_path.is_dir() {
+        return Err(format!("Target is not a directory: {}", target_folder));
+    }
+
     let job = OrganizeJob::new(&target_folder);
     JobManager::save_job(&job)?;
     Ok(job)
@@ -167,7 +177,7 @@ pub async fn execute_plan_parallel(
         Some("fail") => ConflictPolicy::Fail,
         Some("auto_rename") | None => ConflictPolicy::AutoRename, // Default to auto-rename
         Some(other) => {
-            eprintln!("[ExecutePlan] Unknown conflict policy '{}', using auto_rename", other);
+            tracing::warn!(policy = %other, "Unknown conflict policy, using auto_rename");
             ConflictPolicy::AutoRename
         }
     };
@@ -175,9 +185,9 @@ pub async fn execute_plan_parallel(
     let config = ExecutionConfig {
         on_destination_exists: policy,
     };
-    eprintln!(
-        "[ExecutePlan] Starting parallel execution of {} operations",
-        plan.operations.len()
+    tracing::info!(
+        operations = plan.operations.len(),
+        "Starting parallel plan execution"
     );
 
     // Create a WAL journal from the plan
@@ -265,9 +275,9 @@ pub async fn execute_plan_parallel(
         }
     }
 
-    eprintln!(
-        "[ExecutePlan] Created WAL journal with {} entries",
-        journal.entries.len()
+    tracing::debug!(
+        entries = journal.entries.len(),
+        "Created WAL journal"
     );
 
     // Save the journal
@@ -286,7 +296,7 @@ pub async fn execute_plan_parallel(
                 "total": total
             }),
         );
-        eprintln!("[ExecutePlan] Progress: {}/{}", completed, total);
+        tracing::debug!(completed = completed, total = total, "Execution progress");
     }));
 
     // Execute using the parallel DAG executor with progress callback and conflict config
@@ -295,9 +305,12 @@ pub async fn execute_plan_parallel(
         .execute_journal_with_config(&plan.plan_id, Some(progress_callback), config)
         .await?;
 
-    eprintln!(
-        "[ExecutePlan] Execution complete: {} completed, {} failed, {} skipped, {} renamed",
-        result.completed_count, result.failed_count, result.skipped_count, result.renamed_count
+    tracing::info!(
+        completed = result.completed_count,
+        failed = result.failed_count,
+        skipped = result.skipped_count,
+        renamed = result.renamed_count,
+        "Plan execution complete"
     );
 
     // Clean up the journal if all succeeded
