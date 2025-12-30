@@ -2,33 +2,81 @@ use crate::models::{DirectoryContents, FileEntry, FileMetadata};
 use crate::security::PathValidator;
 use std::path::Path;
 
+/// Structured error for directory operations
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryError {
+    pub code: String,
+    pub message: String,
+    pub path: String,
+    pub is_permission_error: bool,
+}
+
+impl From<DirectoryError> for String {
+    fn from(err: DirectoryError) -> Self {
+        err.message
+    }
+}
+
 /// Read directory contents
 #[tauri::command]
 pub async fn read_directory(
     path: String,
     show_hidden: Option<bool>,
-) -> Result<DirectoryContents, String> {
-    let path = Path::new(&path);
+) -> Result<DirectoryContents, DirectoryError> {
+    let path_obj = Path::new(&path);
     let show_hidden = show_hidden.unwrap_or(false);
 
-    if !path.exists() {
-        return Err(format!("Path does not exist: {:?}", path));
+    if !path_obj.exists() {
+        return Err(DirectoryError {
+            code: "NOT_FOUND".to_string(),
+            message: format!("Path does not exist: {:?}", path_obj),
+            path: path.clone(),
+            is_permission_error: false,
+        });
     }
 
-    if !path.is_dir() {
-        return Err(format!("Path is not a directory: {:?}", path));
+    if !path_obj.is_dir() {
+        return Err(DirectoryError {
+            code: "NOT_DIRECTORY".to_string(),
+            message: format!("Path is not a directory: {:?}", path_obj),
+            path: path.clone(),
+            is_permission_error: false,
+        });
     }
 
-    let dir_name = path
+    let dir_name = path_obj
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.to_string_lossy().to_string());
+        .unwrap_or_else(|| path_obj.to_string_lossy().to_string());
 
-    let parent_path = path.parent().map(|p| p.to_string_lossy().to_string());
+    let parent_path = path_obj.parent().map(|p| p.to_string_lossy().to_string());
 
     let mut entries: Vec<FileEntry> = Vec::new();
 
-    let read_dir = std::fs::read_dir(path).map_err(|e| format!("Failed to read directory: {}", e))?;
+    let read_dir = match std::fs::read_dir(path_obj) {
+        Ok(rd) => rd,
+        Err(e) => {
+            let is_permission_error =
+                e.raw_os_error() == Some(1) || e.kind() == std::io::ErrorKind::PermissionDenied;
+
+            return Err(DirectoryError {
+                code: if is_permission_error {
+                    "PERMISSION_DENIED"
+                } else {
+                    "READ_ERROR"
+                }
+                .to_string(),
+                message: if is_permission_error {
+                    "Access denied. Sentinel needs Full Disk Access permission to read this folder. Open System Settings > Privacy & Security > Full Disk Access.".to_string()
+                } else {
+                    format!("Failed to read directory: {}", e)
+                },
+                path: path.clone(),
+                is_permission_error,
+            });
+        }
+    };
 
     for entry in read_dir {
         match entry {
@@ -65,7 +113,7 @@ pub async fn read_directory(
     let total_count = entries.len();
 
     Ok(DirectoryContents {
-        path: path.to_string_lossy().to_string(),
+        path: path_obj.to_string_lossy().to_string(),
         name: dir_name,
         parent_path,
         entries,

@@ -16,6 +16,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_macos_permissions::init())
         .manage(watcher_handle)
         .invoke_handler(tauri::generate_handler![
             // Filesystem commands
@@ -61,6 +62,13 @@ pub fn run() {
             get_thumbnail,
             clear_thumbnail_cache,
             get_thumbnail_cache_stats,
+            // Permission commands
+            check_path_permission,
+            get_protected_directories,
+            open_privacy_settings,
+            // Photo commands
+            scan_photos,
+            get_photo_directories,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

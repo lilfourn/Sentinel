@@ -21,6 +21,7 @@
     "fs:allow-stat",
     "shell:allow-execute",
     "shell:allow-spawn",
-    "shell:allow-stdin-write"
+    "shell:allow-stdin-write",
+    "macos-permissions:default"
   ]
 }

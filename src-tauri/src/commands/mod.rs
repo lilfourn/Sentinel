@@ -1,11 +1,15 @@
 pub mod ai;
 pub mod filesystem;
 pub mod jobs;
+pub mod permissions;
+pub mod photos;
 pub mod thumbnails;
 pub mod watcher;
 
 pub use ai::*;
 pub use filesystem::*;
 pub use jobs::*;
+pub use permissions::*;
+pub use photos::*;
 pub use thumbnails::*;
 pub use watcher::*;
