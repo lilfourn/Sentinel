@@ -75,4 +75,5 @@ sha2 = "0.10"
 
 # SVG rendering
 resvg = "0.44"
+tauri-plugin-macos-permissions = "2.3.0"
 

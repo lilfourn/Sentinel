@@ -179,6 +179,16 @@ OPERATION TYPES for submit_plan:
 - rename: { "type": "rename", "path": "/abs/path", "newName": "new-name.ext" }
 - trash: { "type": "trash", "path": "/abs/path" }
 
+NAMING CONVENTIONS:
+When a naming convention is specified in the user request:
+1. This is a PRIMARY goal - rename files to match the convention
+2. Analyze each file name against the specified pattern and example
+3. Generate "rename" operations for ALL files that don't match the convention
+4. Apply the convention consistently: correct case, separators, format
+5. Example: If convention is "kebab-case" and file is "Invoice_Apple_2024.pdf",
+   rename to "invoice-apple-2024.pdf"
+6. A folder is NOT "already organized" if file names don't match the convention
+
 RULES:
 1. All paths must be absolute
 2. Create folders before moving files into them
@@ -187,10 +197,14 @@ RULES:
 5. ALWAYS call submit_plan when done - this is required to complete
 
 ALREADY ORGANIZED FOLDERS:
-If the folder is already well-organized or no changes are needed:
-- Still call submit_plan with an empty operations array
-- Provide a helpful description explaining why no changes are needed
-- Example: { "description": "Folder is already well-organized with clear structure", "operations": [] }
+If the folder structure is already well-organized AND no naming convention was specified
+(or all files already match the specified convention):
+- Call submit_plan with an empty operations array
+- Explain why no changes are needed
+
+If a naming convention WAS specified and files don't match it:
+- Generate rename operations even if folder structure is good
+- Renaming to match conventions is always required when a convention is selected
 "#;
 
 /// Build organize prompt based on user request

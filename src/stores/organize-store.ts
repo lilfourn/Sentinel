@@ -306,6 +306,10 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
       executedOps: [],
       failedOp: null,
       currentOpIndex: -1,
+      awaitingConventionSelection: false,
+      suggestedConventions: null,
+      selectedConvention: null,
+      conventionSkipped: false,
     });
   },
 
@@ -383,7 +387,184 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
     // This will create a fresh job since the old one might have partial state
     await get().startOrganize(interruptedJob.targetFolder);
   },
+
+  // Select a naming convention and continue with plan generation
+  selectConvention: (convention: NamingConvention) => {
+    set({
+      selectedConvention: convention,
+      conventionSkipped: false,
+      awaitingConventionSelection: false,
+    });
+
+    // Continue with plan generation
+    continueWithConvention(get, set);
+  },
+
+  // Skip naming convention selection and continue with folder-only organization
+  skipConventionSelection: () => {
+    set({
+      selectedConvention: null,
+      conventionSkipped: true,
+      awaitingConventionSelection: false,
+    });
+
+    // Continue with plan generation
+    continueWithConvention(get, set);
+  },
 }));
+
+// Phase 2: Continue with plan generation after convention selection
+async function continueWithConvention(
+  get: () => OrganizeState & OrganizeActions,
+  set: (state: Partial<OrganizeState>) => void
+) {
+  const state = get();
+  const { targetFolder, selectedConvention, conventionSkipped } = state;
+
+  if (!targetFolder) return;
+
+  set({ isAnalyzing: true });
+
+  state.addThought('planning', 'Generating organization plan...',
+    conventionSkipped ? 'Skipping file renaming' : `Using ${selectedConvention?.name} convention`);
+
+  try {
+    // Set up event listener for streaming thoughts from Rust
+    let unlisten: UnlistenFn | null = null;
+    try {
+      unlisten = await listen<{ type: string; content: string; detail?: string }>('ai-thought', (event) => {
+        const { type, content, detail } = event.payload;
+        get().addThought(type as ThoughtType, content, detail);
+      });
+    } catch {
+      // Event listener failed, continue without it
+    }
+
+    const rawPlan = await invoke<OrganizePlan>('generate_organize_plan_with_convention', {
+      folderPath: targetFolder,
+      userRequest: 'Organize this folder by grouping files based on their content type and purpose. Create logical folder structures.',
+      convention: conventionSkipped ? null : selectedConvention,
+    });
+
+    // Clean up listener
+    if (unlisten) unlisten();
+
+    // Defensive validation of plan structure
+    if (!rawPlan) {
+      throw new Error('No plan returned from AI agent');
+    }
+    if (!rawPlan.operations) {
+      throw new Error('Plan missing operations array');
+    }
+    if (!Array.isArray(rawPlan.operations)) {
+      throw new Error('Operations is not an array');
+    }
+
+    // Add risk levels to operations (backend doesn't include them)
+    const plan = addRiskLevels(rawPlan);
+
+    // Handle "already organized" case (0 operations)
+    if (plan.operations.length === 0) {
+      state.addThought('complete', 'Folder is already well organized!', plan.description || 'No changes needed');
+      set({
+        currentPlan: plan,
+        isAnalyzing: false,
+        isExecuting: false,
+      });
+
+      // Mark job as complete since nothing to do
+      const jobId = get().currentJobId;
+      if (jobId && !jobId.startsWith('local-')) {
+        invoke('complete_organize_job', { jobId }).catch(console.error);
+        setTimeout(() => invoke('clear_organize_job').catch(console.error), 1000);
+      }
+      return;
+    }
+
+    state.addThought('planning', `Plan ready: ${plan.operations.length} operations`, plan.description);
+
+    set({ currentPlan: plan, isAnalyzing: false });
+
+    // Persist the plan to job state
+    const currentJobId = get().currentJobId;
+    if (currentJobId && !currentJobId.startsWith('local-')) {
+      try {
+        await invoke('set_job_plan', {
+          jobId: currentJobId,
+          planId: plan.planId,
+          description: plan.description,
+          operations: plan.operations,
+          targetFolder: plan.targetFolder,
+        });
+      } catch (e) {
+        console.error('[Organize] Failed to persist plan:', e);
+      }
+    }
+
+    // Phase 3: Executing
+    state.addThought('executing', 'Starting execution...', 'Applying changes to folder');
+    set({ isExecuting: true });
+
+    for (let i = 0; i < plan.operations.length; i++) {
+      const op = plan.operations[i];
+      get().setCurrentOpIndex(i);
+
+      const opName = getOperationDescription(op);
+      state.addThought('executing', opName, `Operation ${i + 1} of ${plan.operations.length}`);
+
+      try {
+        await executeOperation(op);
+        get().markOpExecuted(op.opId);
+
+        // Persist progress
+        const jobId = get().currentJobId;
+        if (jobId && !jobId.startsWith('local-')) {
+          invoke('complete_job_operation', { jobId, opId: op.opId, currentIndex: i }).catch(console.error);
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } catch (error) {
+        state.addThought('error', `Failed: ${opName}`, String(error));
+        get().markOpFailed(op.opId);
+
+        // Persist failure
+        const jobId = get().currentJobId;
+        if (jobId && !jobId.startsWith('local-')) {
+          invoke('fail_organize_job', { jobId, error: String(error) }).catch(console.error);
+        }
+
+        console.error(`Operation failed: ${op.type}`, error);
+        return;
+      }
+    }
+
+    // Phase 4: Complete
+    state.addThought('complete', 'Organization complete!', `Successfully executed ${plan.operations.length} operations`);
+    get().setCurrentOpIndex(-1);
+    get().setExecuting(false);
+
+    // Mark job as complete and clear
+    const finalJobId = get().currentJobId;
+    if (finalJobId && !finalJobId.startsWith('local-')) {
+      invoke('complete_organize_job', { jobId: finalJobId }).catch(console.error);
+      setTimeout(() => invoke('clear_organize_job').catch(console.error), 1000);
+    }
+
+  } catch (error) {
+    state.addThought('error', 'Organization failed', String(error));
+
+    // Persist error
+    const jobId = get().currentJobId;
+    if (jobId && !jobId.startsWith('local-')) {
+      invoke('fail_organize_job', { jobId, error: String(error) }).catch(console.error);
+    }
+
+    set({
+      isAnalyzing: false,
+      analysisError: String(error),
+    });
+  }
+}
 
 // Helper to describe an operation
 function getOperationDescription(op: OrganizeOperation): string {

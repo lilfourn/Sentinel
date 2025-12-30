@@ -11,6 +11,7 @@ import {
   Loader2,
   FolderOpen,
   FileText,
+  FileType,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import {
@@ -18,6 +19,7 @@ import {
   type AIThought,
   type ThoughtType,
 } from '../../stores/organize-store';
+import { ConventionSelector } from './ConventionSelector';
 import './ChangesPanel.css';
 
 export function ChangesPanel() {
@@ -30,6 +32,10 @@ export function ChangesPanel() {
     isExecuting,
     executedOps,
     closeOrganizer,
+    awaitingConventionSelection,
+    suggestedConventions,
+    selectConvention,
+    skipConventionSelection,
   } = useOrganizeStore();
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -51,7 +57,7 @@ export function ChangesPanel() {
   const isWorking = !isComplete && !hasError;
 
   return (
-    <div className="w-80 h-full flex flex-col border-l border-white/5 glass-sidebar">
+    <div className="w-96 h-full flex flex-col border-l border-white/5 glass-sidebar">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2.5 border-b border-white/5">
         <div className="flex items-center gap-2">
@@ -84,9 +90,18 @@ export function ChangesPanel() {
             <ActivityItem
               key={thought.id}
               thought={thought}
-              isLatest={index === thoughts.length - 1 && isWorking}
+              isLatest={index === thoughts.length - 1 && isWorking && !awaitingConventionSelection}
             />
           ))}
+
+          {/* Naming Convention Selection */}
+          {awaitingConventionSelection && suggestedConventions && (
+            <ConventionSelector
+              conventions={suggestedConventions}
+              onSelect={selectConvention}
+              onSkip={skipConventionSelection}
+            />
+          )}
 
           {/* Execution progress */}
           {isExecuting && currentPlan && (
@@ -152,6 +167,7 @@ function ActivityItem({ thought, isLatest }: { thought: AIThought; isLatest: boo
             thought.type === 'error' && 'bg-red-500/20 text-red-400',
             thought.type === 'executing' && 'bg-orange-500/20 text-orange-400',
             thought.type === 'planning' && 'bg-blue-500/20 text-blue-400',
+            thought.type === 'naming_conventions' && 'bg-purple-500/20 text-purple-400',
             (thought.type === 'scanning' || thought.type === 'analyzing') && 'bg-gray-500/20 text-gray-400',
             thought.type === 'thinking' && 'bg-gray-500/10 text-gray-500'
           )}
@@ -213,6 +229,8 @@ function getThoughtIcon(type: ThoughtType) {
       return <FileSearch size={11} />;
     case 'analyzing':
       return <FileText size={11} />;
+    case 'naming_conventions':
+      return <FileType size={11} />;
     case 'thinking':
       return <Lightbulb size={11} />;
     case 'planning':
@@ -278,6 +296,7 @@ function StatusFooter({
   const phaseLabels: Record<ThoughtType, string> = {
     scanning: 'Scanning folder...',
     analyzing: 'Analyzing contents...',
+    naming_conventions: 'Choose naming style...',
     thinking: 'Processing...',
     planning: 'Creating plan...',
     executing: 'Applying changes...',
