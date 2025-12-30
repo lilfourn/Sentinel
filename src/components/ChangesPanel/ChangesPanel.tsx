@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useState } from 'react';
 import {
   X,
   CheckCircle,
@@ -20,6 +20,10 @@ import {
   type ThoughtType,
 } from '../../stores/organize-store';
 import { ConventionSelector } from './ConventionSelector';
+import { DynamicStatus } from './DynamicStatus';
+import { SimulationControls } from './SimulationControls';
+import { ExecutionProgress } from './ExecutionProgress';
+import { PlanPreview } from './PlanPreview';
 import './ChangesPanel.css';
 
 export function ChangesPanel() {
@@ -38,6 +42,10 @@ export function ChangesPanel() {
     skipConventionSelection,
     phase,
     analysisError,
+    latestEvent,
+    executionProgress,
+    acceptPlanParallel,
+    rejectPlan,
   } = useOrganizeStore();
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -105,8 +113,43 @@ export function ChangesPanel() {
             />
           )}
 
-          {/* Execution progress */}
-          {isExecuting && currentPlan && (
+          {/* V5: Simulation Controls - shown when plan is ready for approval */}
+          {phase === 'simulation' && currentPlan && (
+            <div className="mt-3 p-3 rounded-lg bg-white/[0.03] border border-white/10">
+              <div className="mb-3">
+                <p className="text-xs text-gray-300 font-medium">
+                  Ready to organize {currentPlan.operations.length} files
+                </p>
+                <p className="text-[10px] text-gray-500 mt-1">
+                  Review the changes below before applying
+                </p>
+              </div>
+
+              {/* Plan Preview - shows what will change */}
+              <PlanPreview plan={currentPlan} className="mb-4" />
+
+              <SimulationControls
+                hasConflicts={false}
+                conflictCount={0}
+                isApplying={false}
+                onApply={acceptPlanParallel}
+                onCancel={rejectPlan}
+              />
+            </div>
+          )}
+
+          {/* V5: Execution progress - clean progress bar instead of per-operation list */}
+          {executionProgress && (
+            <ExecutionProgress
+              completed={executionProgress.completed}
+              total={executionProgress.total}
+              phase={executionProgress.phase}
+              className="mt-2"
+            />
+          )}
+
+          {/* Fallback: Old execution progress for cases without executionProgress state */}
+          {isExecuting && currentPlan && !executionProgress && (
             <div className="mt-2 p-2 rounded-lg bg-orange-500/10 border border-orange-500/20">
               <div className="flex items-center gap-2 mb-2">
                 <Loader2 size={12} className="text-orange-400 animate-spin" />
@@ -137,35 +180,46 @@ export function ChangesPanel() {
         totalCount={totalCount}
         currentPhase={currentPhase}
         errorDetail={analysisError}
+        latestEvent={latestEvent}
       />
     </div>
   );
 }
 
-// Individual activity item
+// Individual activity item with expand/collapse support
 function ActivityItem({ thought, isLatest }: { thought: AIThought; isLatest: boolean }) {
+  const [isExpanded, setIsExpanded] = useState(false);
   const icon = getThoughtIcon(thought.type);
   const isToolCall = thought.type === 'executing' || thought.content.includes('Running');
   const isThinking = thought.type === 'thinking';
+  const hasExpandableContent = thought.expandableDetails && thought.expandableDetails.length > 0;
 
   // Skip verbose "Processing..." messages
   if (thought.content.includes('Processing... (step')) {
     return null;
   }
 
+  const handleClick = () => {
+    if (hasExpandableContent) {
+      setIsExpanded(!isExpanded);
+    }
+  };
+
   return (
     <div
       className={cn(
         'group rounded-lg p-2 transition-colors',
         isLatest && 'bg-white/[0.03]',
-        !isLatest && 'hover:bg-white/[0.02]'
+        !isLatest && 'hover:bg-white/[0.02]',
+        hasExpandableContent && 'cursor-pointer'
       )}
+      onClick={handleClick}
     >
-      <div className="flex items-start gap-2">
-        {/* Icon */}
+      <div className="flex items-center gap-2">
+        {/* Expand/collapse chevron or icon */}
         <div
           className={cn(
-            'mt-0.5 w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0',
+            'w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0',
             thought.type === 'complete' && 'bg-green-500/20 text-green-400',
             thought.type === 'error' && 'bg-red-500/20 text-red-400',
             thought.type === 'executing' && 'bg-orange-500/20 text-orange-400',
@@ -175,8 +229,14 @@ function ActivityItem({ thought, isLatest }: { thought: AIThought; isLatest: boo
             thought.type === 'thinking' && 'bg-gray-500/10 text-gray-500'
           )}
         >
-          {isLatest && thought.type !== 'complete' && thought.type !== 'error' ? (
-            <Loader2 size={11} className="animate-spin" />
+          {hasExpandableContent ? (
+            <ChevronRight
+              size={11}
+              className={cn(
+                'transition-transform duration-200',
+                isExpanded && 'rotate-90'
+              )}
+            />
           ) : (
             icon
           )}
@@ -184,20 +244,39 @@ function ActivityItem({ thought, isLatest }: { thought: AIThought; isLatest: boo
 
         {/* Content */}
         <div className="flex-1 min-w-0">
-          <p
-            className={cn(
-              'text-xs leading-relaxed',
-              isThinking ? 'text-gray-500' : 'text-gray-300',
-              thought.type === 'error' && 'text-red-400'
+          <div className="flex items-center gap-1.5">
+            <p
+              className={cn(
+                'text-xs leading-relaxed flex-1',
+                isThinking ? 'text-gray-500' : 'text-gray-300',
+                thought.type === 'error' && 'text-red-400'
+              )}
+            >
+              {formatThoughtContent(thought.content)}
+            </p>
+            {hasExpandableContent && !isExpanded && (
+              <span className="text-[10px] text-gray-500">
+                {thought.expandableDetails!.length} details
+              </span>
             )}
-          >
-            {formatThoughtContent(thought.content)}
-          </p>
+          </div>
 
-          {/* Tool call details */}
-          {isToolCall && thought.detail && (
+          {/* Tool call details (simple) */}
+          {isToolCall && thought.detail && !hasExpandableContent && (
             <div className="mt-1.5 text-[10px] text-gray-500 font-mono bg-black/20 rounded px-1.5 py-1 truncate">
               {thought.detail}
+            </div>
+          )}
+
+          {/* Expandable details */}
+          {hasExpandableContent && isExpanded && (
+            <div className="mt-2 space-y-1 pl-1 border-l-2 border-white/10">
+              {thought.expandableDetails!.map((detail, idx) => (
+                <div key={idx} className="flex items-baseline gap-2 text-[10px]">
+                  <span className="text-gray-500 font-medium shrink-0">{detail.label}:</span>
+                  <span className="text-gray-400 truncate">{detail.value}</span>
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -256,12 +335,14 @@ function StatusFooter({
   totalCount,
   currentPhase,
   errorDetail,
+  latestEvent,
 }: {
   isComplete: boolean;
   hasError: boolean;
   totalCount: number;
   currentPhase: ThoughtType;
   errorDetail?: string | null;
+  latestEvent: { type: string; detail: string } | null;
 }) {
   if (isComplete) {
     const message = totalCount === 0 ? 'Already organized' : 'Complete';
@@ -304,24 +385,13 @@ function StatusFooter({
     );
   }
 
-  // Working state - show current phase
-  const phaseLabels: Record<ThoughtType, string> = {
-    scanning: 'Scanning folder...',
-    analyzing: 'Analyzing contents...',
-    naming_conventions: 'Choose naming style...',
-    thinking: 'Processing...',
-    planning: 'Creating plan...',
-    executing: 'Applying changes...',
-    complete: 'Complete',
-    error: 'Error',
-  };
-
+  // Working state - show dynamic status with contextual messages
   return (
     <div className="p-3 border-t border-white/5">
-      <div className="flex items-center gap-2">
-        <Loader2 size={12} className="text-orange-400 animate-spin" />
-        <p className="text-xs text-gray-400">{phaseLabels[currentPhase]}</p>
-      </div>
+      <DynamicStatus
+        eventType={latestEvent?.type || currentPhase}
+        detail={latestEvent?.detail}
+      />
     </div>
   );
 }

@@ -26,7 +26,7 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
   const [loadingWatcher, setLoadingWatcher] = useState(false);
 
   const { startWatcher, stopWatcher, getStatus } = useWatcher();
-  const { watchDownloads, updateSettings } = useSyncedSettings();
+  const { watchDownloads, skipDeleteConfirmation, updateSettings } = useSyncedSettings();
 
   // Load initial state
   useEffect(() => {
@@ -248,6 +248,43 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
                   Configure your Anthropic API key to enable auto-rename
                 </p>
               )}
+            </div>
+          </section>
+
+          {/* File Operations Section */}
+          <section>
+            <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
+              File Operations
+            </h3>
+
+            <div className="space-y-3">
+              {/* Skip delete confirmation toggle */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-900 dark:text-gray-100">
+                    Skip delete confirmation
+                  </p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    Move files to Trash without asking
+                  </p>
+                </div>
+                <button
+                  onClick={() => updateSettings({ skipDeleteConfirmation: !skipDeleteConfirmation })}
+                  className={cn(
+                    'relative w-11 h-6 rounded-full transition-colors',
+                    skipDeleteConfirmation
+                      ? 'bg-orange-500'
+                      : 'bg-gray-300 dark:bg-gray-600'
+                  )}
+                >
+                  <span
+                    className={cn(
+                      'absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform',
+                      skipDeleteConfirmation && 'translate-x-5'
+                    )}
+                  />
+                </button>
+              </div>
             </div>
           </section>
         </div>

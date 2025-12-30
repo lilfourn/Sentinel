@@ -2,9 +2,14 @@
 //!
 //! Handles persistence of WAL journals to disk, enabling crash recovery.
 //! Journals are stored as JSON files in ~/.config/sentinel/wal/
+//!
+//! ## Concurrency Safety
+//! Uses file locking via fs2 to prevent race conditions when multiple
+//! parallel operations update the same journal simultaneously.
 
 use super::entry::{WALJournal, WALStatus};
-use std::fs;
+use fs2::FileExt;
+use std::fs::{self, File, OpenOptions};
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -81,6 +86,36 @@ impl WALManager {
     /// Get the file path for a journal
     fn journal_path(&self, job_id: &str) -> PathBuf {
         self.wal_dir.join(format!("{}.wal.json", job_id))
+    }
+
+    /// Get the lock file path for a journal
+    fn lock_path(&self, job_id: &str) -> PathBuf {
+        self.wal_dir.join(format!("{}.wal.lock", job_id))
+    }
+
+    /// Acquire an exclusive lock for a journal.
+    /// Returns a File handle that must be kept alive while holding the lock.
+    fn acquire_lock(&self, job_id: &str) -> Result<File, WALError> {
+        self.ensure_dir()?;
+
+        let lock_path = self.lock_path(job_id);
+        let lock_file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|e| WALError {
+                message: format!("Failed to open lock file: {}", e),
+                kind: WALErrorKind::IoError,
+            })?;
+
+        // Block until we get exclusive access
+        lock_file.lock_exclusive().map_err(|e| WALError {
+            message: format!("Failed to acquire lock: {}", e),
+            kind: WALErrorKind::IoError,
+        })?;
+
+        Ok(lock_file)
     }
 
     /// Save a journal to disk
@@ -208,7 +243,12 @@ impl WALManager {
     }
 
     /// Mark a specific entry as complete
+    ///
+    /// Uses file locking to prevent race conditions with parallel operations.
     pub fn mark_entry_complete(&self, job_id: &str, entry_id: Uuid) -> Result<(), WALError> {
+        // Acquire exclusive lock before read-modify-write
+        let _lock = self.acquire_lock(job_id)?;
+
         let mut journal = self.load_journal(job_id)?.ok_or_else(|| WALError {
             message: format!("Journal not found: {}", job_id),
             kind: WALErrorKind::NotFound,
@@ -222,17 +262,23 @@ impl WALManager {
         entry.mark_complete();
         self.save_journal(&journal)?;
 
+        // Lock is automatically released when _lock is dropped
         eprintln!("[WAL] Marked entry {} as complete", entry_id);
         Ok(())
     }
 
     /// Mark a specific entry as failed
+    ///
+    /// Uses file locking to prevent race conditions with parallel operations.
     pub fn mark_entry_failed(
         &self,
         job_id: &str,
         entry_id: Uuid,
         error: String,
     ) -> Result<(), WALError> {
+        // Acquire exclusive lock before read-modify-write
+        let _lock = self.acquire_lock(job_id)?;
+
         let mut journal = self.load_journal(job_id)?.ok_or_else(|| WALError {
             message: format!("Journal not found: {}", job_id),
             kind: WALErrorKind::NotFound,
@@ -246,12 +292,18 @@ impl WALManager {
         entry.mark_failed(error.clone());
         self.save_journal(&journal)?;
 
+        // Lock is automatically released when _lock is dropped
         eprintln!("[WAL] Marked entry {} as failed: {}", entry_id, error);
         Ok(())
     }
 
     /// Mark a specific entry as in progress
+    ///
+    /// Uses file locking to prevent race conditions with parallel operations.
     pub fn mark_entry_in_progress(&self, job_id: &str, entry_id: Uuid) -> Result<(), WALError> {
+        // Acquire exclusive lock before read-modify-write
+        let _lock = self.acquire_lock(job_id)?;
+
         let mut journal = self.load_journal(job_id)?.ok_or_else(|| WALError {
             message: format!("Journal not found: {}", job_id),
             kind: WALErrorKind::NotFound,
@@ -265,12 +317,18 @@ impl WALManager {
         entry.mark_in_progress();
         self.save_journal(&journal)?;
 
+        // Lock is automatically released when _lock is dropped
         eprintln!("[WAL] Marked entry {} as in progress", entry_id);
         Ok(())
     }
 
     /// Mark a specific entry as rolled back
+    ///
+    /// Uses file locking to prevent race conditions with parallel operations.
     pub fn mark_entry_rolled_back(&self, job_id: &str, entry_id: Uuid) -> Result<(), WALError> {
+        // Acquire exclusive lock before read-modify-write
+        let _lock = self.acquire_lock(job_id)?;
+
         let mut journal = self.load_journal(job_id)?.ok_or_else(|| WALError {
             message: format!("Journal not found: {}", job_id),
             kind: WALErrorKind::NotFound,
@@ -284,6 +342,7 @@ impl WALManager {
         entry.mark_rolled_back();
         self.save_journal(&journal)?;
 
+        // Lock is automatically released when _lock is dropped
         eprintln!("[WAL] Marked entry {} as rolled back", entry_id);
         Ok(())
     }
@@ -291,6 +350,7 @@ impl WALManager {
     /// Discard (delete) a journal after successful completion
     pub fn discard_journal(&self, job_id: &str) -> Result<(), WALError> {
         let path = self.journal_path(job_id);
+        let lock_path = self.lock_path(job_id);
 
         if path.exists() {
             fs::remove_file(&path).map_err(|e| WALError {
@@ -298,6 +358,11 @@ impl WALManager {
                 kind: WALErrorKind::IoError,
             })?;
             eprintln!("[WAL] Discarded journal: {}", job_id);
+        }
+
+        // Clean up lock file
+        if lock_path.exists() {
+            let _ = fs::remove_file(&lock_path);
         }
 
         Ok(())
@@ -322,6 +387,7 @@ impl WALManager {
             };
 
             let name = entry.file_name().to_string_lossy().to_string();
+            // Only match .wal.json files, not .wal.lock files
             if name.ends_with(".wal.json") {
                 let job_id = name.trim_end_matches(".wal.json").to_string();
                 job_ids.push(job_id);
@@ -329,6 +395,27 @@ impl WALManager {
         }
 
         Ok(job_ids)
+    }
+
+    /// Clean up stale lock files (e.g., from crashed processes)
+    pub fn cleanup_stale_locks(&self) -> Result<(), WALError> {
+        if !self.wal_dir.exists() {
+            return Ok(());
+        }
+
+        let entries = fs::read_dir(&self.wal_dir).map_err(|e| WALError {
+            message: format!("Failed to read WAL directory: {}", e),
+            kind: WALErrorKind::IoError,
+        })?;
+
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.ends_with(".wal.lock") {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+
+        Ok(())
     }
 }
 

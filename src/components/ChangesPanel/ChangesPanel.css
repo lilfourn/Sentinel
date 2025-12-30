@@ -75,3 +75,29 @@
 .changes-panel-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.15);
 }
+
+/* Dynamic status text animation */
+.dynamic-status-text {
+  animation: subtle-pulse 2s ease-in-out infinite;
+}
+
+/* Loading dots animation (Cursor-style ellipsis) */
+@keyframes loading-dots {
+  0%, 20% {
+    content: '';
+  }
+  40% {
+    content: '.';
+  }
+  60% {
+    content: '..';
+  }
+  80%, 100% {
+    content: '...';
+  }
+}
+
+.loading-dots::after {
+  content: '';
+  animation: loading-dots 1.4s infinite steps(1);
+}

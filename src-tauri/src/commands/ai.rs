@@ -1,4 +1,4 @@
-use crate::ai::{run_v2_agentic_organize, AnthropicClient, CredentialManager};
+use crate::ai::{run_v2_agentic_organize, ExpandableDetail, AnthropicClient, CredentialManager};
 use crate::jobs::OrganizePlan;
 use std::path::Path;
 
@@ -174,12 +174,13 @@ pub async fn generate_organize_plan_agentic(
 ) -> Result<OrganizePlan, String> {
     use tauri::Emitter;
 
-    let emit = |thought_type: &str, content: &str| {
+    let emit = |thought_type: &str, content: &str, expandable_details: Option<Vec<ExpandableDetail>>| {
         let _ = app_handle.emit(
             "ai-thought",
             serde_json::json!({
                 "type": thought_type,
                 "content": content,
+                "expandableDetails": expandable_details,
             }),
         );
     };
@@ -254,12 +255,13 @@ pub async fn generate_organize_plan_with_convention(
 ) -> Result<crate::jobs::OrganizePlan, String> {
     use tauri::Emitter;
 
-    let emit = |thought_type: &str, content: &str| {
+    let emit = |thought_type: &str, content: &str, expandable_details: Option<Vec<ExpandableDetail>>| {
         let _ = app_handle.emit(
             "ai-thought",
             serde_json::json!({
                 "type": thought_type,
                 "content": content,
+                "expandableDetails": expandable_details,
             }),
         );
     };

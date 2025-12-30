@@ -13,6 +13,8 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { ContextMenu, buildFileContextMenuItems, buildBackgroundContextMenuItems, type ContextMenuPosition } from '../ContextMenu/ContextMenu';
+import { ConfirmDialog } from '../dialogs/ConfirmDialog';
+import { ICloudErrorDialog } from '../dialogs/ICloudErrorDialog';
 import { useDragDropContext } from '../drag-drop';
 import { FolderIcon } from '../icons/FolderIcon';
 import { SelectionOverlay } from './SelectionOverlay';
@@ -21,9 +23,9 @@ import { GhostOverlay, getGhostClasses } from '../ghost';
 import { useNavigationStore } from '../../stores/navigation-store';
 import { useSelectionStore } from '../../stores/selection-store';
 import { useOrganizeStore } from '../../stores/organize-store';
-import { showSuccess, showError } from '../../stores/toast-store';
 import { useThumbnail } from '../../hooks/useThumbnail';
 import { useMarqueeSelection } from '../../hooks/useMarqueeSelection';
+import { useDelete } from '../../hooks/useDelete';
 import { cn, getFileType, isThumbnailSupported, openFile } from '../../lib/utils';
 import type { FileEntry } from '../../types/file';
 import type { GhostState } from '../../types/ghost';
@@ -124,6 +126,19 @@ function FileGridItem({
     document.addEventListener('mouseup', handleMouseUp);
   };
 
+  // Handle HTML5 drag start for chat panel context
+  const handleDragStartHTML5 = (e: React.DragEvent) => {
+    // Set sentinel custom MIME types for chat panel
+    e.dataTransfer.setData('sentinel/path', entry.path);
+    e.dataTransfer.setData('sentinel/type', entry.isDirectory ? 'folder' : 'file');
+    e.dataTransfer.setData('sentinel/name', entry.name);
+    e.dataTransfer.setData('sentinel/size', String(entry.size || 0));
+    if (entry.mimeType) {
+      e.dataTransfer.setData('sentinel/mime', entry.mimeType);
+    }
+    e.dataTransfer.effectAllowed = 'copyLink';
+  };
+
   const handleMouseEnter = () => {
     if (onDragEnter && entry.isDirectory) {
       onDragEnter();
@@ -139,6 +154,8 @@ function FileGridItem({
   return (
     <div
       data-path={entry.path}
+      draggable={!isEditing}
+      onDragStart={handleDragStartHTML5}
       onMouseDown={handleMouseDown}
       onMouseEnter={handleMouseEnter}
       onMouseUp={handleMouseUp}
@@ -277,6 +294,19 @@ export function FileGridView({ entries }: FileGridViewProps) {
     queryClient.invalidateQueries({ queryKey: ['directory', currentPath, showHidden] });
   }, [queryClient, currentPath, showHidden]);
 
+  // Delete with confirmation and iCloud error handling
+  const {
+    requestDelete,
+    confirmDelete,
+    cancelDelete,
+    closeICloudError,
+    useQuarantineFallback,
+    showConfirmation,
+    showICloudError,
+    pendingName,
+    iCloudFileName,
+  } = useDelete(refreshDirectory);
+
   // Handle rename confirmation
   const handleRenameConfirm = useCallback(
     async (oldPath: string, newName: string) => {
@@ -285,12 +315,11 @@ export function FileGridView({ entries }: FileGridViewProps) {
 
       try {
         await invoke('rename_file', { oldPath, newPath });
-        showSuccess('Renamed', `${oldPath.split('/').pop()} → ${newName}`);
         stopEditing();
         refreshDirectory();
         select(newPath, false);
       } catch (error) {
-        showError('Rename failed', String(error));
+        console.error('Rename failed:', error);
       }
     },
     [stopEditing, refreshDirectory, select]
@@ -306,16 +335,14 @@ export function FileGridView({ entries }: FileGridViewProps) {
       try {
         if (creatingType === 'folder') {
           await invoke('create_directory', { path: newPath });
-          showSuccess('Created folder', name);
         } else {
           await invoke('create_file', { path: newPath });
-          showSuccess('Created file', name);
         }
         stopCreating();
         refreshDirectory();
         setTimeout(() => select(newPath, false), 100);
       } catch (error) {
-        showError(`Failed to create ${creatingType}`, String(error));
+        console.error(`Failed to create ${creatingType}:`, error);
       }
     },
     [creatingType, creatingInPath, stopCreating, refreshDirectory, select]
@@ -442,15 +469,10 @@ export function FileGridView({ entries }: FileGridViewProps) {
     [selectedPaths, select]
   );
 
-  const handleMoveToTrash = useCallback(async (path: string) => {
-    try {
-      await invoke('delete_to_trash', { path });
-      showSuccess('Moved to Trash', path.split('/').pop() || path);
-      refreshDirectory();
-    } catch (error) {
-      showError('Failed to move to Trash', String(error));
-    }
-  }, [refreshDirectory]);
+  // Wrapper for context menu usage
+  const handleMoveToTrash = useCallback((path: string) => {
+    requestDelete(path);
+  }, [requestDelete]);
 
   // Handle drag start on an item
   const handleDragStart = useCallback(
@@ -668,6 +690,27 @@ export function FileGridView({ entries }: FileGridViewProps) {
           onClose={() => setBackgroundContextMenu(null)}
         />
       )}
+
+      {/* Delete Confirmation Dialog */}
+      <ConfirmDialog
+        isOpen={showConfirmation}
+        title="Move to Trash?"
+        message="This item will be moved to the Trash."
+        itemName={pendingName || undefined}
+        confirmLabel="Move to Trash"
+        variant="danger"
+        showDontAskAgain={true}
+        onConfirm={confirmDelete}
+        onCancel={cancelDelete}
+      />
+
+      {/* iCloud Error Dialog */}
+      <ICloudErrorDialog
+        isOpen={showICloudError}
+        fileName={iCloudFileName || ''}
+        onClose={closeICloudError}
+        onUseQuarantine={useQuarantineFallback}
+      />
     </div>
   );
 }

@@ -2,7 +2,6 @@ import { createContext, useContext, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDragDrop } from '../../hooks/useDragDrop';
 import { DragPreview } from './DragPreview';
-import { showSuccess, showError } from '../../stores/toast-store';
 import type { DragState, DropTarget } from '../../types/drag-drop';
 
 interface DragDropContextValue {
@@ -34,19 +33,12 @@ export function DragDropProvider({ children }: DragDropProviderProps) {
   const queryClient = useQueryClient();
 
   const dragDrop = useDragDrop({
-    onDropComplete: (newPaths, isCopy) => {
+    onDropComplete: () => {
       // Invalidate directory queries to refresh the views
       queryClient.invalidateQueries({ queryKey: ['directory'] });
-
-      const action = isCopy ? 'Copied' : 'Moved';
-      const itemCount = newPaths.length;
-      showSuccess(
-        `${action} ${itemCount} item${itemCount !== 1 ? 's' : ''}`,
-        itemCount === 1 ? newPaths[0]?.split('/').pop() : undefined
-      );
     },
     onDropError: (error) => {
-      showError('Drop failed', error);
+      console.error('Drop failed:', error);
     },
   });
 

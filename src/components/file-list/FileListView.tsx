@@ -6,11 +6,13 @@ import { FileRow } from './FileRow';
 import { NewItemRow } from './NewItemRow';
 import { SelectionOverlay } from './SelectionOverlay';
 import { ContextMenu, buildFileContextMenuItems, buildBackgroundContextMenuItems, type ContextMenuPosition } from '../ContextMenu/ContextMenu';
+import { ConfirmDialog } from '../dialogs/ConfirmDialog';
+import { ICloudErrorDialog } from '../dialogs/ICloudErrorDialog';
 import { useDragDropContext } from '../drag-drop';
 import { useNavigationStore } from '../../stores/navigation-store';
 import { useSelectionStore } from '../../stores/selection-store';
 import { useOrganizeStore } from '../../stores/organize-store';
-import { showSuccess, showError } from '../../stores/toast-store';
+import { useDelete } from '../../hooks/useDelete';
 import { openFile } from '../../lib/utils';
 import type { FileEntry } from '../../types/file';
 import type { SelectionRect } from '../../hooks/useMarqueeSelection';
@@ -87,6 +89,19 @@ export function FileListView({ entries }: FileListViewProps) {
     queryClient.invalidateQueries({ queryKey: ['directory', currentPath, showHidden] });
   }, [queryClient, currentPath, showHidden]);
 
+  // Delete with confirmation and iCloud error handling
+  const {
+    requestDelete,
+    confirmDelete,
+    cancelDelete,
+    closeICloudError,
+    useQuarantineFallback,
+    showConfirmation,
+    showICloudError,
+    pendingName,
+    iCloudFileName,
+  } = useDelete(refreshDirectory);
+
   // Handle rename confirmation
   const handleRenameConfirm = useCallback(
     async (oldPath: string, newName: string) => {
@@ -95,13 +110,12 @@ export function FileListView({ entries }: FileListViewProps) {
 
       try {
         await invoke('rename_file', { oldPath, newPath });
-        showSuccess('Renamed', `${oldPath.split('/').pop()} → ${newName}`);
         stopEditing();
         refreshDirectory();
         // Select the renamed item
         select(newPath, false);
       } catch (error) {
-        showError('Rename failed', String(error));
+        console.error('Rename failed:', error);
       }
     },
     [stopEditing, refreshDirectory, select]
@@ -117,17 +131,15 @@ export function FileListView({ entries }: FileListViewProps) {
       try {
         if (creatingType === 'folder') {
           await invoke('create_directory', { path: newPath });
-          showSuccess('Created folder', name);
         } else {
           await invoke('create_file', { path: newPath });
-          showSuccess('Created file', name);
         }
         stopCreating();
         refreshDirectory();
         // Select the new item after a brief delay to let the directory refresh
         setTimeout(() => select(newPath, false), 100);
       } catch (error) {
-        showError(`Failed to create ${creatingType}`, String(error));
+        console.error(`Failed to create ${creatingType}:`, error);
       }
     },
     [creatingType, creatingInPath, stopCreating, refreshDirectory, select]
@@ -298,14 +310,10 @@ export function FileListView({ entries }: FileListViewProps) {
     [selectedPaths, select]
   );
 
-  const handleMoveToTrash = useCallback(async (path: string) => {
-    try {
-      await invoke('delete_to_trash', { path });
-      showSuccess('Moved to Trash', path.split('/').pop() || path);
-    } catch (error) {
-      showError('Failed to move to Trash', String(error));
-    }
-  }, []);
+  // Wrapper for context menu usage
+  const handleMoveToTrash = useCallback((path: string) => {
+    requestDelete(path);
+  }, [requestDelete]);
 
   // Handle drag start on an item
   const handleDragStart = useCallback(
@@ -605,6 +613,27 @@ export function FileListView({ entries }: FileListViewProps) {
           onClose={() => setBackgroundContextMenu(null)}
         />
       )}
+
+      {/* Delete Confirmation Dialog */}
+      <ConfirmDialog
+        isOpen={showConfirmation}
+        title="Move to Trash?"
+        message="This item will be moved to the Trash."
+        itemName={pendingName || undefined}
+        confirmLabel="Move to Trash"
+        variant="danger"
+        showDontAskAgain={true}
+        onConfirm={confirmDelete}
+        onCancel={cancelDelete}
+      />
+
+      {/* iCloud Error Dialog */}
+      <ICloudErrorDialog
+        isOpen={showICloudError}
+        fileName={iCloudFileName || ''}
+        onClose={closeICloudError}
+        onUseQuarantine={useQuarantineFallback}
+      />
     </div>
   );
 }

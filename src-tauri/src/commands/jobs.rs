@@ -1,8 +1,10 @@
-use crate::execution::{ExecutionEngine, ExecutionResult};
+use crate::execution::{ConflictPolicy, ExecutionConfig, ExecutionEngine, ExecutionResult, ProgressCallback};
 use crate::jobs::{JobManager, JobStatus, OrganizeJob, OrganizeOperation, OrganizePlan};
 use crate::wal::entry::{WALJournal, WALOperationType};
 use crate::wal::journal::WALManager;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tauri::{AppHandle, Emitter};
 
 /// Start a new organize job
 #[tauri::command]
@@ -143,13 +145,36 @@ pub fn resume_organize_job(job_id: String) -> Result<OrganizeJob, String> {
 
 /// Execute an organize plan using parallel DAG-based execution
 ///
+/// V5: Now emits 'execution-progress' events for clean UI updates.
+/// V6: Now accepts conflict_policy for handling destination conflicts.
+///
 /// This command:
 /// 1. Converts the OrganizePlan to WAL entries
 /// 2. Builds a dependency DAG for parallel execution
 /// 3. Executes operations in parallel within each level
-/// 4. Returns the execution result
+/// 4. Handles destination conflicts according to policy (skip, auto_rename, fail)
+/// 5. Emits progress events after each level completes
+/// 6. Returns the execution result
 #[tauri::command]
-pub async fn execute_plan_parallel(plan: OrganizePlan) -> Result<ExecutionResult, String> {
+pub async fn execute_plan_parallel(
+    app_handle: AppHandle,
+    plan: OrganizePlan,
+    conflict_policy: Option<String>,
+) -> Result<ExecutionResult, String> {
+    // Parse conflict policy (default to AutoRename for better UX)
+    let policy = match conflict_policy.as_deref() {
+        Some("skip") => ConflictPolicy::Skip,
+        Some("fail") => ConflictPolicy::Fail,
+        Some("auto_rename") | None => ConflictPolicy::AutoRename, // Default to auto-rename
+        Some(other) => {
+            eprintln!("[ExecutePlan] Unknown conflict policy '{}', using auto_rename", other);
+            ConflictPolicy::AutoRename
+        }
+    };
+
+    let config = ExecutionConfig {
+        on_destination_exists: policy,
+    };
     eprintln!(
         "[ExecutePlan] Starting parallel execution of {} operations",
         plan.operations.len()
@@ -251,13 +276,28 @@ pub async fn execute_plan_parallel(plan: OrganizePlan) -> Result<ExecutionResult
         .save_journal(&journal)
         .map_err(|e| format!("Failed to save WAL journal: {}", e.message))?;
 
-    // Execute using the parallel DAG executor
+    // V5: Create progress callback that emits Tauri events
+    let app_handle_clone = app_handle.clone();
+    let progress_callback: Arc<ProgressCallback> = Arc::new(Box::new(move |completed, total| {
+        let _ = app_handle_clone.emit(
+            "execution-progress",
+            serde_json::json!({
+                "completed": completed,
+                "total": total
+            }),
+        );
+        eprintln!("[ExecutePlan] Progress: {}/{}", completed, total);
+    }));
+
+    // Execute using the parallel DAG executor with progress callback and conflict config
     let engine = ExecutionEngine::new();
-    let result = engine.execute_journal(&plan.plan_id).await?;
+    let result = engine
+        .execute_journal_with_config(&plan.plan_id, Some(progress_callback), config)
+        .await?;
 
     eprintln!(
-        "[ExecutePlan] Execution complete: {} completed, {} failed",
-        result.completed_count, result.failed_count
+        "[ExecutePlan] Execution complete: {} completed, {} failed, {} skipped, {} renamed",
+        result.completed_count, result.failed_count, result.skipped_count, result.renamed_count
     );
 
     // Clean up the journal if all succeeded

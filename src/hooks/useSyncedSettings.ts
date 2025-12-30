@@ -37,6 +37,7 @@ export function useSyncedSettings() {
         sortBy: SortBy;
         sortDirection: SortDirection;
         aiModel: AIModel;
+        skipDeleteConfirmation: boolean;
       }>
     ) => {
       // Update local store immediately
@@ -53,6 +54,8 @@ export function useSyncedSettings() {
       if (updates.sortDirection !== undefined)
         store.setSortDirection(updates.sortDirection);
       if (updates.aiModel !== undefined) store.setAIModel(updates.aiModel);
+      if (updates.skipDeleteConfirmation !== undefined)
+        store.setSkipDeleteConfirmation(updates.skipDeleteConfirmation);
 
       // Sync to Convex if configured
       if (isConvexConfigured && isClerkConfigured) {

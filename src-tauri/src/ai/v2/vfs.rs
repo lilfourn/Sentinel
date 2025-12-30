@@ -6,7 +6,8 @@
 //! - Conflict detection before execution
 //! - Rule-based bulk operations
 
-use crate::ai::rules::{RuleEvaluator, SimpleVectorIndex, VirtualFile, VectorIndex};
+use crate::ai::rules::{RuleEvaluator, VirtualFile, VectorIndex};
+use super::local_vector_index::{LocalVectorConfig, LocalVectorIndex};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -85,12 +86,19 @@ pub struct ShadowVFS {
     operations: Vec<PlannedOperation>,
     /// Operation ID counter
     op_counter: usize,
-    /// Vector index for semantic search
-    vector_index: SimpleVectorIndex,
+    /// Vector index for semantic search (uses fastembed LocalVectorIndex in V3)
+    vector_index: LocalVectorIndex,
+    /// V4: Tracks file paths that have been matched by rules (for coverage calculation)
+    matched_files: std::collections::HashSet<String>,
+    /// V5: Tracks destination paths to detect collisions during planning
+    /// Maps destination path -> source path that claimed it
+    destination_registry: HashMap<String, String>,
 }
 
 impl ShadowVFS {
     /// Create a new ShadowVFS from a target folder
+    ///
+    /// V3: Uses LocalVectorIndex with fastembed for real semantic search
     pub fn new(root: &Path) -> std::io::Result<Self> {
         let mut files = HashMap::new();
         let mut file_list = Vec::new();
@@ -98,8 +106,38 @@ impl ShadowVFS {
         // Recursively scan the folder
         Self::scan_directory(root, &mut files, &mut file_list)?;
 
-        // Build the vector index
-        let vector_index = SimpleVectorIndex::build_from_files(&file_list);
+        // Build the LocalVectorIndex with batch indexing
+        let config = LocalVectorConfig::default();
+        let mut vector_index = LocalVectorIndex::new(config).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Failed to create vector index: {}", e),
+            )
+        })?;
+
+        // Prepare batch data: (path, searchable_text)
+        // searchable_text combines filename and extension for better semantic matching
+        let batch_data: Vec<(PathBuf, String)> = file_list
+            .iter()
+            .filter(|f| !f.is_directory)
+            .map(|f| {
+                let text = format!(
+                    "{} {}",
+                    f.name,
+                    f.ext.as_deref().unwrap_or("")
+                );
+                (PathBuf::from(&f.path), text)
+            })
+            .collect();
+
+        if !batch_data.is_empty() {
+            vector_index.index_batch(batch_data).map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to index files: {}", e),
+                )
+            })?;
+        }
 
         Ok(Self {
             root: root.to_path_buf(),
@@ -107,6 +145,8 @@ impl ShadowVFS {
             operations: Vec::new(),
             op_counter: 0,
             vector_index,
+            matched_files: std::collections::HashSet::new(),
+            destination_registry: HashMap::new(),
         })
     }
 
@@ -163,8 +203,8 @@ impl ShadowVFS {
         self.files.values().collect()
     }
 
-    /// Get the vector index
-    pub fn vector_index(&self) -> &SimpleVectorIndex {
+    /// Get the vector index (LocalVectorIndex in V3)
+    pub fn vector_index(&self) -> &LocalVectorIndex {
         &self.vector_index
     }
 
@@ -176,6 +216,95 @@ impl ShadowVFS {
     /// Clear all planned operations
     pub fn clear_operations(&mut self) {
         self.operations.clear();
+        self.destination_registry.clear();
+    }
+
+    /// Generate a unique destination path by appending a counter suffix
+    /// e.g., file.pdf -> file_1.pdf, file_2.pdf, etc.
+    fn generate_unique_destination(&self, dest_folder: &Path, original_name: &str) -> (PathBuf, String) {
+        let path = Path::new(original_name);
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| original_name.to_string());
+        let ext = path
+            .extension()
+            .map(|e| format!(".{}", e.to_string_lossy()))
+            .unwrap_or_default();
+
+        let mut counter = 1;
+        loop {
+            let candidate_name = format!("{}_{}{}", stem, counter, ext);
+            let full_path = dest_folder.join(&candidate_name);
+            let path_str = full_path.to_string_lossy().to_string();
+
+            // Check if this destination is already claimed or exists on disk
+            if !self.destination_registry.contains_key(&path_str) && !full_path.exists() {
+                return (full_path, candidate_name);
+            }
+
+            counter += 1;
+            if counter > 1000 {
+                // Safety limit - use UUID suffix
+                let uuid_name = format!("{}_{}{}", stem, uuid::Uuid::new_v4(), ext);
+                let uuid_path = dest_folder.join(&uuid_name);
+                return (uuid_path, uuid_name);
+            }
+        }
+    }
+
+    // ========== V4 Coverage Tracking Methods ==========
+
+    /// Get the total file count (excludes directories)
+    pub fn file_count(&self) -> usize {
+        self.files.values().filter(|f| !f.is_directory).count()
+    }
+
+    /// Get count of files that have been matched by rules
+    pub fn organized_count(&self) -> usize {
+        self.matched_files.len()
+    }
+
+    /// Get files that haven't been matched by any rule yet
+    pub fn get_unmatched_files(&self) -> Vec<VirtualFile> {
+        self.files
+            .values()
+            .filter(|f| !f.is_directory && !self.matched_files.contains(&f.path))
+            .cloned()
+            .collect()
+    }
+
+    /// Get the set of matched file paths (for sampling)
+    pub fn matched_paths(&self) -> &std::collections::HashSet<String> {
+        &self.matched_files
+    }
+
+    /// Calculate current coverage percentage
+    pub fn coverage(&self) -> f64 {
+        let total = self.file_count();
+        if total == 0 {
+            return 1.0;
+        }
+        self.matched_files.len() as f64 / total as f64
+    }
+
+    /// Check if coverage target (95%) has been reached
+    pub fn coverage_target_reached(&self) -> bool {
+        self.coverage() >= 0.95
+    }
+
+    /// Reset coverage tracking (but keep operations)
+    pub fn reset_coverage(&mut self) {
+        self.matched_files.clear();
+    }
+
+    /// Get all files as a Vec (for sampling)
+    pub fn all_files_vec(&self) -> Vec<VirtualFile> {
+        self.files
+            .values()
+            .filter(|f| !f.is_directory)
+            .cloned()
+            .collect()
     }
 
     /// Generate a new operation ID
@@ -240,6 +369,7 @@ impl ShadowVFS {
     ) -> Result<usize, String> {
         if mode == "replace" {
             self.operations.clear();
+            self.destination_registry.clear();
         }
 
         // Sort rules by priority (descending)
@@ -274,6 +404,8 @@ impl ShadowVFS {
 
             for file in matching_files {
                 processed_files.insert(file.path.clone());
+                // V4: Track matched files for coverage calculation
+                self.matched_files.insert(file.path.clone());
 
                 // Handle move operation
                 if let Some(ref dest_folder) = rule.then_move_to {
@@ -291,18 +423,37 @@ impl ShadowVFS {
                         folders_to_create.insert(dest_str.clone());
                     }
 
-                    // Create move operation
+                    // Create move operation with collision detection
                     let file_name = Path::new(&file.path)
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default();
+
+                    // V5: Check if destination is already claimed or exists on disk
+                    let initial_dest = dest_path.join(&file_name);
+                    let initial_dest_str = initial_dest.to_string_lossy().to_string();
+
+                    let final_dest = if self.destination_registry.contains_key(&initial_dest_str)
+                        || initial_dest.exists()
+                    {
+                        // Collision detected - generate unique destination
+                        let (unique_path, _) = self.generate_unique_destination(&dest_path, &file_name);
+                        unique_path
+                    } else {
+                        initial_dest
+                    };
+
+                    // Register this destination as claimed
+                    let final_dest_str = final_dest.to_string_lossy().to_string();
+                    self.destination_registry
+                        .insert(final_dest_str.clone(), file.path.clone());
 
                     let op_id = self.next_op_id();
                     self.operations.push(PlannedOperation {
                         op_id,
                         op_type: OperationType::Move,
                         source: Some(file.path.clone()),
-                        destination: Some(dest_path.join(&file_name).to_string_lossy().to_string()),
+                        destination: Some(final_dest_str),
                         path: None,
                         new_name: None,
                         rule_name: Some(rule.name.clone()),

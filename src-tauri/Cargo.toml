@@ -53,6 +53,9 @@ thiserror = "2"
 # Timestamps
 chrono = { version = "0.4", features = ["serde"] }
 
+# File time modification (for FSEvents triggering)
+filetime = "0.2"
+
 # Unique IDs
 uuid = { version = "1", features = ["v4", "serde"] }
 
@@ -92,6 +95,14 @@ async-trait = "0.1"
 
 # Number of CPUs for parallelism
 num_cpus = "1.16"
+
+# Cross-platform file locking
+fs2 = "0.4"
+
+# macOS-specific dependencies for NSFileCoordinator
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5"
+block2 = "0.5"
 
 [dev-dependencies]
 # Temporary directories for tests

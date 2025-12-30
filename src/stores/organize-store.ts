@@ -8,7 +8,10 @@ import type { OperationStatus, WalEntry, WalRecoveryInfo, WalRecoveryResult } fr
 interface ExecutionResult {
   completedCount: number;
   failedCount: number;
+  skippedCount: number;
+  renamedCount: number;
   errors: string[];
+  skipped: string[];
   success: boolean;
 }
 
@@ -40,12 +43,20 @@ export type ThoughtType =
   | 'complete'
   | 'error';
 
+// Expandable detail item for rich thought display
+export interface ThoughtDetail {
+  label: string;
+  value: string;
+}
+
 export interface AIThought {
   id: string;
   type: ThoughtType;
   content: string;
   timestamp: number;
   detail?: string;
+  // Expandable details for richer information display
+  expandableDetails?: ThoughtDetail[];
 }
 
 /**
@@ -62,6 +73,13 @@ export type OrganizePhase =
   | 'rolling_back' // Undoing completed operations
   | 'complete'     // All done
   | 'failed';      // Error occurred
+
+// Execution progress tracked from backend events
+export interface ExecutionProgressState {
+  completed: number;
+  total: number;
+  phase: 'preparing' | 'executing' | 'complete' | 'failed';
+}
 
 interface OrganizeState {
   // UI state
@@ -92,6 +110,9 @@ interface OrganizeState {
   failedOp: string | null;
   currentOpIndex: number;
 
+  // Execution progress (V5: replaces per-operation thoughts)
+  executionProgress: ExecutionProgressState | null;
+
   // Recovery state
   hasInterruptedJob: boolean;
   interruptedJob: InterruptedJobInfo | null;
@@ -101,6 +122,9 @@ interface OrganizeState {
   suggestedConventions: NamingConvention[] | null;
   selectedConvention: NamingConvention | null;
   conventionSkipped: boolean;
+
+  // Latest event for dynamic status display
+  latestEvent: { type: string; detail: string } | null;
 }
 
 // Info about an interrupted job for recovery UI
@@ -119,7 +143,7 @@ interface OrganizeActions {
   closeOrganizer: () => void;
 
   // Thought actions
-  addThought: (type: ThoughtType, content: string, detail?: string) => void;
+  addThought: (type: ThoughtType, content: string, detail?: string, expandableDetails?: ThoughtDetail[]) => void;
   setPhase: (phase: ThoughtType) => void;
   clearThoughts: () => void;
 
@@ -152,6 +176,9 @@ interface OrganizeActions {
   rejectPlan: () => void;
   startRollback: () => Promise<void>;
   setOperationStatus: (opId: string, status: OperationStatus) => void;
+
+  // V5: Execution progress updates
+  setExecutionProgress: (progress: ExecutionProgressState | null) => void;
 }
 
 let thoughtId = 0;
@@ -171,7 +198,19 @@ async function executeOperation(op: OrganizeOperation): Promise<void> {
       await invoke('rename_file', { oldPath: op.path, newPath });
       break;
     case 'trash':
-      await invoke('delete_to_trash', { path: op.path });
+      try {
+        await invoke('delete_to_trash', { path: op.path });
+      } catch (error) {
+        // Check if it's an iCloud download required error
+        const errorStr = typeof error === 'object' && error !== null ? JSON.stringify(error) : String(error);
+        if (errorStr.includes('I_CLOUD_DOWNLOAD_REQUIRED') || errorStr.includes('-8013') || errorStr.includes('needs to be downloaded')) {
+          // Fallback to quarantine for iCloud files during automated operations
+          console.log(`[Organize] iCloud file detected, using quarantine fallback for: ${op.path}`);
+          await invoke('quarantine_item', { path: op.path });
+        } else {
+          throw error;
+        }
+      }
       break;
     case 'copy':
       await invoke('copy_file', { source: op.source, destination: op.destination });
@@ -229,17 +268,21 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
   suggestedConventions: null,
   selectedConvention: null,
   conventionSkipped: false,
+  latestEvent: null,
+  executionProgress: null,
 
   // Thought actions
-  addThought: (type, content, detail) => set((state) => ({
+  addThought: (type, content, detail, expandableDetails) => set((state) => ({
     thoughts: [...state.thoughts, {
       id: `thought-${++thoughtId}`,
       type,
       content,
       detail,
+      expandableDetails,
       timestamp: Date.now(),
     }],
     currentPhase: type,
+    latestEvent: { type, detail: content },
   })),
 
   setPhase: (phase) => set({ currentPhase: phase }),
@@ -288,9 +331,9 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
       // Set up event listener for streaming thoughts from Rust
       let unlisten: UnlistenFn | null = null;
       try {
-        unlisten = await listen<{ type: string; content: string; detail?: string }>('ai-thought', (event) => {
-          const { type, content, detail } = event.payload;
-          get().addThought(type as ThoughtType, content, detail);
+        unlisten = await listen<{ type: string; content: string; detail?: string; expandableDetails?: ThoughtDetail[] }>('ai-thought', (event) => {
+          const { type, content, detail, expandableDetails } = event.payload;
+          get().addThought(type as ThoughtType, content, detail, expandableDetails);
         });
       } catch {
         // Event listener failed, continue without it
@@ -343,6 +386,7 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
       currentJobId: null,
       thoughts: [],
       currentPhase: 'scanning',
+      phase: 'idle',
       currentPlan: null,
       isAnalyzing: false,
       analysisError: null,
@@ -350,6 +394,7 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
       executedOps: [],
       failedOp: null,
       currentOpIndex: -1,
+      executionProgress: null,
       awaitingConventionSelection: false,
       suggestedConventions: null,
       selectedConvention: null,
@@ -529,11 +574,15 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
     set({ phase });
   },
 
+  // Sequential execution (kept for fallback/compatibility)
+  // V5: Uses progress tracking instead of per-operation thoughts
   acceptPlan: async () => {
     const { currentPlan, phase } = get();
     if (!currentPlan || (phase !== 'simulation' && phase !== 'review')) {
       return;
     }
+
+    const totalOps = currentPlan.operations.length;
 
     // Transition to committing phase
     set({ phase: 'committing', isExecuting: true });
@@ -545,14 +594,29 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
     }
     set({ operationStatuses });
 
-    // Execute operations (reusing existing execution logic)
+    // V5: Initialize progress state
+    get().setExecutionProgress({
+      completed: 0,
+      total: totalOps,
+      phase: 'executing',
+    });
+
+    // V5: Single thought for execution start
+    get().addThought('executing', 'Organizing files...',
+      `${totalOps} operations queued`);
+
+    // Execute operations sequentially
     for (let i = 0; i < currentPlan.operations.length; i++) {
       const op = currentPlan.operations[i];
       get().setCurrentOpIndex(i);
       get().setOperationStatus(op.opId, 'executing');
 
-      const opName = getOperationDescription(op);
-      get().addThought('executing', opName, `Operation ${i + 1} of ${currentPlan.operations.length}`);
+      // V5: Update progress instead of adding per-operation thoughts
+      get().setExecutionProgress({
+        completed: i,
+        total: totalOps,
+        phase: 'executing',
+      });
 
       try {
         await executeOperation(op);
@@ -579,18 +643,30 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
           invoke('complete_job_operation', { jobId, opId: op.opId, currentIndex: i }).catch(console.error);
         }
 
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 50));
       } catch (error) {
+        const opName = getOperationDescription(op);
         get().addThought('error', `Failed: ${opName}`, String(error));
         get().markOpFailed(op.opId);
         get().setOperationStatus(op.opId, 'failed');
-        set({ phase: 'failed' });
+        get().setExecutionProgress({
+          completed: i,
+          total: totalOps,
+          phase: 'failed',
+        });
+        set({ phase: 'failed', isExecuting: false });
         return;
       }
     }
 
     // Complete
-    get().addThought('complete', 'Organization complete!', `Successfully executed ${currentPlan.operations.length} operations`);
+    get().setExecutionProgress({
+      completed: totalOps,
+      total: totalOps,
+      phase: 'complete',
+    });
+    get().addThought('complete', 'Organization complete!',
+      `${totalOps} files organized`);
     set({
       phase: 'complete',
       isExecuting: false,
@@ -599,11 +675,14 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
   },
 
   // Execute plan using parallel DAG-based execution
+  // V5: Uses event-based progress tracking instead of per-operation thoughts
   acceptPlanParallel: async () => {
     const { currentPlan, phase } = get();
     if (!currentPlan || (phase !== 'simulation' && phase !== 'review')) {
       return;
     }
+
+    const totalOps = currentPlan.operations.length;
 
     // Transition to committing phase
     set({ phase: 'committing', isExecuting: true });
@@ -615,18 +694,41 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
     }
     set({ operationStatuses });
 
-    get().addThought('executing', 'Starting parallel execution...',
-      `Executing ${currentPlan.operations.length} operations with DAG parallelism`);
+    // V5: Initialize progress state (replaces per-operation thoughts)
+    get().setExecutionProgress({
+      completed: 0,
+      total: totalOps,
+      phase: 'executing',
+    });
+
+    // V5: Single thought for execution start (no per-operation thoughts)
+    get().addThought('executing', 'Organizing files...',
+      `${totalOps} operations queued for parallel execution`);
+
+    // Set up event listener for progress updates from backend
+    let unlisten: UnlistenFn | null = null;
+    try {
+      unlisten = await listen<{ completed: number; total: number }>('execution-progress', (event) => {
+        get().setExecutionProgress({
+          completed: event.payload.completed,
+          total: event.payload.total,
+          phase: 'executing',
+        });
+      });
+    } catch {
+      // Event listener failed, continue without real-time progress
+    }
 
     try {
       // Convert plan to backend format (strip frontend-only fields like riskLevel)
+      // Note: backend expects 'type' not 'opType' per serde rename
       const backendPlan = {
         planId: currentPlan.planId,
         description: currentPlan.description,
         targetFolder: currentPlan.targetFolder,
         operations: currentPlan.operations.map(op => ({
           opId: op.opId,
-          opType: op.type,
+          type: op.type,  // Backend expects 'type' (serde rename)
           source: op.source,
           destination: op.destination,
           path: op.path,
@@ -634,8 +736,14 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
         })),
       };
 
-      // Execute using parallel DAG executor
-      const result = await invoke<ExecutionResult>('execute_plan_parallel', { plan: backendPlan });
+      // Execute using parallel DAG executor with auto-rename conflict policy
+      const result = await invoke<ExecutionResult>('execute_plan_parallel', {
+        plan: backendPlan,
+        conflictPolicy: 'auto_rename', // Auto-rename duplicates like file_1.pdf, file_2.pdf
+      });
+
+      // Clean up listener
+      if (unlisten) unlisten();
 
       if (result.success) {
         // Mark all operations as completed
@@ -644,8 +752,24 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
           get().markOpExecuted(op.opId);
         }
 
-        get().addThought('complete', 'Organization complete!',
-          `Successfully executed ${result.completedCount} operations in parallel`);
+        // V5: Update progress to complete state
+        const processedCount = result.completedCount + result.skippedCount + result.renamedCount;
+        get().setExecutionProgress({
+          completed: processedCount,
+          total: totalOps,
+          phase: 'complete',
+        });
+
+        // V6: Enhanced completion message with rename/skip info
+        let completionDetail = `${result.completedCount} files organized`;
+        if (result.renamedCount > 0) {
+          completionDetail += `, ${result.renamedCount} renamed to avoid conflicts`;
+        }
+        if (result.skippedCount > 0) {
+          completionDetail += `, ${result.skippedCount} skipped`;
+        }
+        get().addThought('complete', 'Organization complete!', completionDetail);
+
         set({
           phase: 'complete',
           isExecuting: false,
@@ -659,13 +783,23 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
           setTimeout(() => invoke('clear_organize_job').catch(console.error), 1000);
         }
       } else {
-        // Partial failure
-        get().addThought('error', 'Some operations failed',
-          `Completed: ${result.completedCount}, Failed: ${result.failedCount}`);
+        // Partial failure - V6: include renamed/skipped in progress
+        const processedCount = result.completedCount + result.skippedCount + result.renamedCount;
+        get().setExecutionProgress({
+          completed: processedCount,
+          total: totalOps,
+          phase: 'failed',
+        });
 
-        for (const error of result.errors) {
-          get().addThought('error', 'Operation error', error);
+        // V6: Enhanced error message with all outcomes
+        let errorDetail = `${result.completedCount} succeeded, ${result.failedCount} failed`;
+        if (result.renamedCount > 0) {
+          errorDetail += `, ${result.renamedCount} renamed`;
         }
+        if (result.skippedCount > 0) {
+          errorDetail += `, ${result.skippedCount} skipped`;
+        }
+        get().addThought('error', 'Some operations failed', errorDetail);
 
         set({ phase: 'failed', isExecuting: false });
 
@@ -674,11 +808,20 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
         if (jobId && !jobId.startsWith('local-')) {
           invoke('fail_organize_job', {
             jobId,
-            error: `${result.failedCount} operations failed: ${result.errors.join('; ')}`
+            error: `${result.failedCount} operations failed: ${result.errors.slice(0, 3).join('; ')}`
           }).catch(console.error);
         }
       }
     } catch (error) {
+      // Clean up listener
+      if (unlisten) unlisten();
+
+      get().setExecutionProgress({
+        completed: 0,
+        total: totalOps,
+        phase: 'failed',
+      });
+
       get().addThought('error', 'Execution failed', String(error));
       set({ phase: 'failed', isExecuting: false });
 
@@ -736,7 +879,17 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
             break;
           case 'create_folder':
             if (entry.path) {
-              await invoke('delete_to_trash', { path: entry.path });
+              try {
+                await invoke('delete_to_trash', { path: entry.path });
+              } catch (error) {
+                // Handle iCloud errors during rollback
+                const errorStr = typeof error === 'object' && error !== null ? JSON.stringify(error) : String(error);
+                if (errorStr.includes('I_CLOUD_DOWNLOAD_REQUIRED') || errorStr.includes('-8013') || errorStr.includes('needs to be downloaded')) {
+                  await invoke('quarantine_item', { path: entry.path });
+                } else {
+                  throw error;
+                }
+              }
             }
             break;
           // copy and trash are harder to reverse safely
@@ -769,6 +922,11 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
       return { operationStatuses: newStatuses };
     });
   },
+
+  // V5: Execution progress updates
+  setExecutionProgress: (progress: ExecutionProgressState | null) => {
+    set({ executionProgress: progress });
+  },
 }));
 
 // Phase 2: Continue with plan generation after convention selection
@@ -790,9 +948,9 @@ async function continueWithConvention(
     // Set up event listener for streaming thoughts from Rust
     let unlisten: UnlistenFn | null = null;
     try {
-      unlisten = await listen<{ type: string; content: string; detail?: string }>('ai-thought', (event) => {
-        const { type, content, detail } = event.payload;
-        get().addThought(type as ThoughtType, content, detail);
+      unlisten = await listen<{ type: string; content: string; detail?: string; expandableDetails?: ThoughtDetail[] }>('ai-thought', (event) => {
+        const { type, content, detail, expandableDetails } = event.payload;
+        get().addThought(type as ThoughtType, content, detail, expandableDetails);
       });
     } catch {
       // Event listener failed, continue without it
@@ -841,8 +999,6 @@ async function continueWithConvention(
 
     state.addThought('planning', `Plan ready: ${plan.operations.length} operations`, plan.description);
 
-    set({ currentPlan: plan, isAnalyzing: false });
-
     // Persist the plan to job state
     const currentJobId = get().currentJobId;
     if (currentJobId && !currentJobId.startsWith('local-')) {
@@ -859,54 +1015,15 @@ async function continueWithConvention(
       }
     }
 
-    // Phase 3: Executing
-    state.addThought('executing', 'Starting execution...', 'Applying changes to folder');
-    set({ isExecuting: true });
+    // V5: Pause at simulation phase for user approval
+    // Instead of auto-executing, set phase to 'simulation' so user can review and approve
+    set({
+      currentPlan: plan,
+      isAnalyzing: false,
+      phase: 'simulation',
+    });
 
-    for (let i = 0; i < plan.operations.length; i++) {
-      const op = plan.operations[i];
-      get().setCurrentOpIndex(i);
-
-      const opName = getOperationDescription(op);
-      state.addThought('executing', opName, `Operation ${i + 1} of ${plan.operations.length}`);
-
-      try {
-        await executeOperation(op);
-        get().markOpExecuted(op.opId);
-
-        // Persist progress
-        const jobId = get().currentJobId;
-        if (jobId && !jobId.startsWith('local-')) {
-          invoke('complete_job_operation', { jobId, opId: op.opId, currentIndex: i }).catch(console.error);
-        }
-
-        await new Promise(resolve => setTimeout(resolve, 100));
-      } catch (error) {
-        state.addThought('error', `Failed: ${opName}`, String(error));
-        get().markOpFailed(op.opId);
-
-        // Persist failure
-        const jobId = get().currentJobId;
-        if (jobId && !jobId.startsWith('local-')) {
-          invoke('fail_organize_job', { jobId, error: String(error) }).catch(console.error);
-        }
-
-        console.error(`Operation failed: ${op.type}`, error);
-        return;
-      }
-    }
-
-    // Phase 4: Complete
-    state.addThought('complete', 'Organization complete!', `Successfully executed ${plan.operations.length} operations`);
-    get().setCurrentOpIndex(-1);
-    get().setExecuting(false);
-
-    // Mark job as complete and clear
-    const finalJobId = get().currentJobId;
-    if (finalJobId && !finalJobId.startsWith('local-')) {
-      invoke('complete_organize_job', { jobId: finalJobId }).catch(console.error);
-      setTimeout(() => invoke('clear_organize_job').catch(console.error), 1000);
-    }
+    // User must now click "Apply" in SimulationControls to call acceptPlanParallel()
 
   } catch (error) {
     state.addThought('error', 'Organization failed', String(error));

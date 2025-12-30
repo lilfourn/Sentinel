@@ -54,7 +54,7 @@ export function showSuccess(title: string, message?: string) {
 }
 
 export function showError(title: string, message?: string) {
-  return showToast({ type: 'error', title, message, duration: 8000 });
+  return showToast({ type: 'error', title, message, duration: 5000 });
 }
 
 export function showInfo(title: string, message?: string) {
@@ -71,6 +71,6 @@ export function showRenameToast(
     title,
     message,
     onUndo,
-    undoTimeout: 10000,
+    undoTimeout: 6000,
   });
 }

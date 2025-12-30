@@ -25,6 +25,9 @@ interface SettingsState {
   // AI preferences
   aiModel: AIModel;
 
+  // Delete confirmation
+  skipDeleteConfirmation: boolean;
+
   // Navigation
   lastVisitedPath: string | null;
 
@@ -43,6 +46,7 @@ interface SettingsState {
   setSortBy: (sortBy: SortBy) => void;
   setSortDirection: (direction: SortDirection) => void;
   setAIModel: (model: AIModel) => void;
+  setSkipDeleteConfirmation: (skip: boolean) => void;
   setLastVisitedPath: (path: string) => void;
 
   // Sync with Convex
@@ -69,6 +73,7 @@ export const useSettingsStore = create<SettingsState>()(
       sortBy: "name",
       sortDirection: "asc",
       aiModel: "sonnet",
+      skipDeleteConfirmation: false,
       lastVisitedPath: null,
       lastSyncedAt: null,
       isSyncing: false,
@@ -102,6 +107,8 @@ export const useSettingsStore = create<SettingsState>()(
 
       setAIModel: (model) => set({ aiModel: model }),
 
+      setSkipDeleteConfirmation: (skip) => set({ skipDeleteConfirmation: skip }),
+
       setLastVisitedPath: (path) => set({ lastVisitedPath: path }),
 
       // Sync methods
@@ -127,6 +134,7 @@ export const useSettingsStore = create<SettingsState>()(
         sortBy: state.sortBy,
         sortDirection: state.sortDirection,
         aiModel: state.aiModel,
+        skipDeleteConfirmation: state.skipDeleteConfirmation,
         lastVisitedPath: state.lastVisitedPath,
         lastSyncedAt: state.lastSyncedAt,
       }),

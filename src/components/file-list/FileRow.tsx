@@ -115,6 +115,19 @@ export function FileRow({
     document.addEventListener('mouseup', handleMouseUp);
   };
 
+  // Handle HTML5 drag start for chat panel context
+  const handleDragStartHTML5 = (e: React.DragEvent) => {
+    // Set sentinel custom MIME types for chat panel
+    e.dataTransfer.setData('sentinel/path', entry.path);
+    e.dataTransfer.setData('sentinel/type', entry.isDirectory ? 'folder' : 'file');
+    e.dataTransfer.setData('sentinel/name', entry.name);
+    e.dataTransfer.setData('sentinel/size', String(entry.size || 0));
+    if (entry.mimeType) {
+      e.dataTransfer.setData('sentinel/mime', entry.mimeType);
+    }
+    e.dataTransfer.effectAllowed = 'copyLink';
+  };
+
   // Handle mouse enter for drop target detection
   const handleMouseEnter = () => {
     if (onDragEnter && entry.isDirectory) {
@@ -132,6 +145,8 @@ export function FileRow({
   return (
     <div
       style={style}
+      draggable={!isEditing}
+      onDragStart={handleDragStartHTML5}
       onMouseDown={handleMouseDown}
       onMouseEnter={handleMouseEnter}
       onMouseUp={handleMouseUp}

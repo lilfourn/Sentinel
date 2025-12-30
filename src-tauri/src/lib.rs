@@ -1,6 +1,7 @@
 mod ai;
 mod commands;
 mod execution;
+mod file_coordination;
 mod jobs;
 mod models;
 pub mod quarantine;
@@ -22,6 +23,7 @@ pub fn run() {
     let vfs_state = create_vfs_state();
     let quarantine_state = create_quarantine_state()
         .expect("Failed to create quarantine manager");
+    let chat_abort_flag = ChatAbortFlag::default();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -33,6 +35,7 @@ pub fn run() {
         .manage(tree_state)
         .manage(vfs_state)
         .manage(quarantine_state)
+        .manage(chat_abort_flag)
         .invoke_handler(tauri::generate_handler![
             // Filesystem commands
             read_directory,
@@ -133,6 +136,11 @@ pub fn run() {
             wal_execute_journal,
             wal_execute_operations,
             wal_get_directory,
+            // Chat commands
+            chat_stream,
+            abort_chat,
+            reset_chat_abort,
+            list_files_for_mention,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

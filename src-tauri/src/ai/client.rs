@@ -17,18 +17,59 @@ pub enum ClaudeModel {
 impl ClaudeModel {
     pub fn as_str(&self) -> &'static str {
         match self {
-            ClaudeModel::Haiku => "claude-haiku-4-5",
+            ClaudeModel::Haiku => "claude-3-5-haiku-latest",
             ClaudeModel::Sonnet => "claude-sonnet-4-5",
         }
     }
 }
 
-/// Message content for API request
-#[derive(Serialize)]
-struct MessageContent {
+/// Cache control for Anthropic prompt caching
+/// See: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+#[derive(Serialize, Clone)]
+pub struct CacheControl {
+    #[serde(rename = "type")]
+    control_type: String,
+}
+
+impl CacheControl {
+    /// Create an ephemeral cache control marker
+    /// Cached content expires after 5 minutes of inactivity
+    pub fn ephemeral() -> Self {
+        Self {
+            control_type: "ephemeral".to_string(),
+        }
+    }
+}
+
+/// Message content for API request with optional cache control
+#[derive(Serialize, Clone)]
+pub struct MessageContent {
     #[serde(rename = "type")]
     content_type: String,
     text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
+}
+
+impl MessageContent {
+    /// Create a text content block (no caching)
+    pub fn text(text: &str) -> Self {
+        Self {
+            content_type: "text".to_string(),
+            text: text.to_string(),
+            cache_control: None,
+        }
+    }
+
+    /// Create a text content block with ephemeral caching
+    /// Use this for large, repeated context like file trees
+    pub fn text_cached(text: &str) -> Self {
+        Self {
+            content_type: "text".to_string(),
+            text: text.to_string(),
+            cache_control: Some(CacheControl::ephemeral()),
+        }
+    }
 }
 
 /// Message in conversation
@@ -102,10 +143,7 @@ impl AnthropicClient {
             system: system_prompt.to_string(),
             messages: vec![Message {
                 role: "user".to_string(),
-                content: vec![MessageContent {
-                    content_type: "text".to_string(),
-                    text: user_message.to_string(),
-                }],
+                content: vec![MessageContent::text(user_message)],
             }],
         };
 
@@ -225,10 +263,7 @@ impl AnthropicClient {
             system: "Say 'ok'".to_string(),
             messages: vec![Message {
                 role: "user".to_string(),
-                content: vec![MessageContent {
-                    content_type: "text".to_string(),
-                    text: "test".to_string(),
-                }],
+                content: vec![MessageContent::text("test")],
             }],
         };
 

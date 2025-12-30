@@ -1,4 +1,5 @@
 pub mod ai;
+pub mod chat;
 pub mod filesystem;
 pub mod jobs;
 pub mod permissions;
@@ -10,6 +11,7 @@ pub mod wal;
 pub mod watcher;
 
 pub use ai::*;
+pub use chat::*;
 pub use filesystem::*;
 pub use jobs::*;
 pub use permissions::*;

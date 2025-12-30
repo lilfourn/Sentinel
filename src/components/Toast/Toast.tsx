@@ -18,10 +18,10 @@ export function Toast({
   type,
   title,
   message,
-  duration = 5000,
+  duration = 2500,
   onDismiss,
   onUndo,
-  undoTimeout = 10000,
+  undoTimeout = 6000,
 }: ToastProps) {
   const [progress, setProgress] = useState(100);
   const [isHovered, setIsHovered] = useState(false);
@@ -61,8 +61,9 @@ export function Toast({
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       className={cn(
-        'relative overflow-hidden rounded-lg shadow-lg',
-        'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700',
+        'relative overflow-hidden rounded-xl shadow-lg',
+        'bg-white/90 dark:bg-[#2a2a2a]/90 backdrop-blur-[20px]',
+        'border border-black/5 dark:border-white/10',
         'min-w-72 max-w-md'
       )}
     >

@@ -16,9 +16,10 @@ import type { ViewMode } from '../../types/file';
 
 interface ToolbarProps {
   onOpenSettings?: () => void;
+  onToggleChat?: () => void;
 }
 
-export function Toolbar({ onOpenSettings }: ToolbarProps) {
+export function Toolbar({ onOpenSettings, onToggleChat }: ToolbarProps) {
   const {
     historyIndex,
     history,
@@ -125,6 +126,19 @@ export function Toolbar({ onOpenSettings }: ToolbarProps) {
           <Settings size={16} />
         </button>
       )}
+
+      {/* Chat button */}
+      <button
+        onClick={onToggleChat}
+        className="p-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+        title="Chat"
+      >
+        <img
+          src="/sentinal-chat.svg"
+          alt="Chat"
+          className="w-7 h-7"
+        />
+      </button>
 
       {/* User menu (shows when signed in) */}
       <UserMenu />

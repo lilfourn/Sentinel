@@ -1,5 +1,5 @@
 import { useCallback, useState, useRef, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   File,
   FileText,
@@ -12,6 +12,8 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { ContextMenu, buildFileContextMenuItems, buildBackgroundContextMenuItems, type ContextMenuPosition } from '../ContextMenu/ContextMenu';
+import { ConfirmDialog } from '../dialogs/ConfirmDialog';
+import { ICloudErrorDialog } from '../dialogs/ICloudErrorDialog';
 import { useDragDropContext } from '../drag-drop';
 import { FolderIcon } from '../icons/FolderIcon';
 import { SelectionOverlay } from './SelectionOverlay';
@@ -20,8 +22,8 @@ import { useNavigationStore } from '../../stores/navigation-store';
 import { useSelectionStore } from '../../stores/selection-store';
 import { useOrganizeStore } from '../../stores/organize-store';
 import { useGhostStore } from '../../stores/ghost-store';
-import { showSuccess, showError } from '../../stores/toast-store';
 import { useMarqueeSelection } from '../../hooks/useMarqueeSelection';
+import { useDelete } from '../../hooks/useDelete';
 import { cn, getFileType, openFile } from '../../lib/utils';
 import type { FileEntry } from '../../types/file';
 import '../ghost/GhostAnimations.css';
@@ -51,7 +53,8 @@ function getFileIcon(entry: FileEntry): LucideIcon | null {
 export function FileColumnsView({ entries }: FileColumnsViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const columnsRef = useRef<HTMLDivElement>(null);
-  const { navigateTo, setQuickLookPath, currentPath } = useNavigationStore();
+  const queryClient = useQueryClient();
+  const { navigateTo, setQuickLookPath, currentPath, showHidden } = useNavigationStore();
   const {
     selectedPaths,
     select,
@@ -68,6 +71,24 @@ export function FileColumnsView({ entries }: FileColumnsViewProps) {
     executeDrop,
     isDragging: isDragDropActive,
   } = useDragDropContext();
+
+  // Refresh directory after changes
+  const refreshDirectory = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['directory', currentPath, showHidden] });
+  }, [queryClient, currentPath, showHidden]);
+
+  // Delete with confirmation and iCloud error handling
+  const {
+    requestDelete,
+    confirmDelete,
+    cancelDelete,
+    closeICloudError,
+    useQuarantineFallback,
+    showConfirmation,
+    showICloudError,
+    pendingName,
+    iCloudFileName,
+  } = useDelete(refreshDirectory);
 
   // Marquee selection
   const {
@@ -179,14 +200,10 @@ export function FileColumnsView({ entries }: FileColumnsViewProps) {
     [selectedPaths, select]
   );
 
-  const handleMoveToTrash = useCallback(async (path: string) => {
-    try {
-      await invoke('delete_to_trash', { path });
-      showSuccess('Moved to Trash', path.split('/').pop() || path);
-    } catch (error) {
-      showError('Failed to move to Trash', String(error));
-    }
-  }, []);
+  // Wrapper for context menu usage
+  const handleMoveToTrash = useCallback((path: string) => {
+    requestDelete(path);
+  }, [requestDelete]);
 
   // Handle drag start on an item
   const handleDragStart = useCallback(
@@ -378,6 +395,27 @@ export function FileColumnsView({ entries }: FileColumnsViewProps) {
           onClose={() => setBackgroundContextMenu(null)}
         />
       )}
+
+      {/* Delete Confirmation Dialog */}
+      <ConfirmDialog
+        isOpen={showConfirmation}
+        title="Move to Trash?"
+        message="This item will be moved to the Trash."
+        itemName={pendingName || undefined}
+        confirmLabel="Move to Trash"
+        variant="danger"
+        showDontAskAgain={true}
+        onConfirm={confirmDelete}
+        onCancel={cancelDelete}
+      />
+
+      {/* iCloud Error Dialog */}
+      <ICloudErrorDialog
+        isOpen={showICloudError}
+        fileName={iCloudFileName || ''}
+        onClose={closeICloudError}
+        onUseQuarantine={useQuarantineFallback}
+      />
     </div>
   );
 }

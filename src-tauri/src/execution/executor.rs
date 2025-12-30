@@ -8,11 +8,42 @@ use crate::wal::entry::{WALEntry, WALJournal, WALOperationType, WALStatus};
 use crate::wal::journal::WALManager;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use super::dag::ExecutionDAG;
+
+/// Policy for handling destination conflicts during execution
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictPolicy {
+    /// Return error (current/default behavior)
+    #[default]
+    Fail,
+    /// Skip the operation and continue execution
+    Skip,
+    /// Generate unique name (_1, _2, etc.) and proceed
+    AutoRename,
+}
+
+/// Configuration for execution behavior
+#[derive(Debug, Clone, Default)]
+pub struct ExecutionConfig {
+    /// How to handle "destination already exists" conflicts
+    pub on_destination_exists: ConflictPolicy,
+}
+
+/// Outcome of a single operation execution
+#[derive(Debug, Clone)]
+pub enum ExecutionOutcome {
+    /// Operation completed successfully
+    Completed,
+    /// Operation completed with auto-rename (includes new path)
+    CompletedWithRename(PathBuf),
+    /// Operation was skipped (includes reason)
+    Skipped(String),
+}
 
 /// Result of executing operations
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,10 +53,30 @@ pub struct ExecutionResult {
     pub completed_count: usize,
     /// Number of operations that failed
     pub failed_count: usize,
+    /// Number of operations that were skipped (e.g., destination exists with skip policy)
+    pub skipped_count: usize,
+    /// Number of operations completed with auto-rename
+    pub renamed_count: usize,
     /// Error messages from failed operations
     pub errors: Vec<String>,
-    /// Whether all operations completed successfully
+    /// Reasons for skipped operations
+    pub skipped: Vec<String>,
+    /// Whether all operations completed successfully (no failures)
     pub success: bool,
+}
+
+/// Progress callback type for V5 execution progress events
+pub type ProgressCallback = Box<dyn Fn(usize, usize) + Send + Sync>;
+
+/// Result of executing a single level
+#[derive(Debug, Clone, Default)]
+struct LevelResult {
+    completed: usize,
+    failed: usize,
+    skipped: usize,
+    renamed: usize,
+    errors: Vec<String>,
+    skipped_reasons: Vec<String>,
 }
 
 impl ExecutionResult {
@@ -34,17 +85,30 @@ impl ExecutionResult {
         Self {
             completed_count: completed,
             failed_count: 0,
+            skipped_count: 0,
+            renamed_count: 0,
             errors: Vec::new(),
+            skipped: Vec::new(),
             success: true,
         }
     }
 
     /// Create a partial success result
-    pub fn partial(completed: usize, failed: usize, errors: Vec<String>) -> Self {
+    pub fn partial(
+        completed: usize,
+        failed: usize,
+        skipped: usize,
+        renamed: usize,
+        errors: Vec<String>,
+        skipped_reasons: Vec<String>,
+    ) -> Self {
         Self {
             completed_count: completed,
             failed_count: failed,
+            skipped_count: skipped,
+            renamed_count: renamed,
             errors,
+            skipped: skipped_reasons,
             success: failed == 0,
         }
     }
@@ -78,13 +142,37 @@ impl ExecutionEngine {
     /// 3. Updates WAL entries as operations complete
     /// 4. Stops on first failure within a level
     pub async fn execute_journal(&self, job_id: &str) -> Result<ExecutionResult, String> {
+        self.execute_journal_with_progress(job_id, None).await
+    }
+
+    /// Execute journal with optional progress callback
+    ///
+    /// V5: Supports progress events for clean UI updates.
+    pub async fn execute_journal_with_progress(
+        &self,
+        job_id: &str,
+        progress_callback: Option<Arc<ProgressCallback>>,
+    ) -> Result<ExecutionResult, String> {
+        self.execute_journal_with_config(job_id, progress_callback, ExecutionConfig::default())
+            .await
+    }
+
+    /// Execute journal with progress callback and conflict configuration
+    ///
+    /// V6: Supports conflict policies (skip/auto-rename).
+    pub async fn execute_journal_with_config(
+        &self,
+        job_id: &str,
+        progress_callback: Option<Arc<ProgressCallback>>,
+        config: ExecutionConfig,
+    ) -> Result<ExecutionResult, String> {
         let journal = self
             .wal_manager
             .load_journal(job_id)?
             .ok_or_else(|| format!("Journal not found: {}", job_id))?;
 
         // Get pending entries
-        let pending_entries: Vec<WALEntry> = journal
+        let pending_entries: Vec<_> = journal
             .entries
             .iter()
             .filter(|e| matches!(e.status, WALStatus::Pending | WALStatus::InProgress))
@@ -104,17 +192,48 @@ impl ExecutionEngine {
             dag.level_count()
         );
 
-        self.execute_dag(&dag, job_id).await
+        self.execute_dag_with_config(&dag, job_id, progress_callback, config)
+            .await
     }
 
     /// Execute operations organized by the DAG
     ///
     /// Each level is executed in parallel, but levels are executed sequentially.
     pub async fn execute_dag(&self, dag: &ExecutionDAG, job_id: &str) -> Result<ExecutionResult, String> {
+        self.execute_dag_with_progress(dag, job_id, None).await
+    }
+
+    /// Execute operations organized by the DAG with optional progress callback
+    ///
+    /// V5: Supports progress events for clean UI updates.
+    /// V6: Supports conflict policies (skip/auto-rename) and continues on non-critical failures.
+    /// Each level is executed in parallel, but levels are executed sequentially.
+    pub async fn execute_dag_with_progress(
+        &self,
+        dag: &ExecutionDAG,
+        job_id: &str,
+        progress_callback: Option<Arc<ProgressCallback>>,
+    ) -> Result<ExecutionResult, String> {
+        self.execute_dag_with_config(dag, job_id, progress_callback, ExecutionConfig::default())
+            .await
+    }
+
+    /// Execute operations with full configuration support
+    pub async fn execute_dag_with_config(
+        &self,
+        dag: &ExecutionDAG,
+        job_id: &str,
+        progress_callback: Option<Arc<ProgressCallback>>,
+        config: ExecutionConfig,
+    ) -> Result<ExecutionResult, String> {
         let levels = dag.get_levels_owned();
+        let total_ops = dag.len();
         let mut total_completed = 0;
         let mut total_failed = 0;
+        let mut total_skipped = 0;
+        let mut total_renamed = 0;
         let mut all_errors: Vec<String> = Vec::new();
+        let mut all_skipped: Vec<String> = Vec::new();
 
         for (level_idx, level) in levels.into_iter().enumerate() {
             eprintln!(
@@ -123,24 +242,43 @@ impl ExecutionEngine {
                 level.len()
             );
 
-            let (completed, failed, errors) = self.execute_level(level, job_id).await?;
+            let level_result = self
+                .execute_level_with_config(level, job_id, &config)
+                .await?;
 
-            total_completed += completed;
-            total_failed += failed;
-            all_errors.extend(errors);
+            total_completed += level_result.completed;
+            total_failed += level_result.failed;
+            total_skipped += level_result.skipped;
+            total_renamed += level_result.renamed;
+            all_errors.extend(level_result.errors);
+            all_skipped.extend(level_result.skipped_reasons);
 
-            // If any operation in this level failed, stop execution
-            // (dependents in later levels may not be safe to execute)
-            if failed > 0 {
+            // V5: Emit progress callback after each level completes
+            if let Some(ref callback) = progress_callback {
+                // Count completed + skipped + renamed as "processed"
+                let processed = total_completed + total_skipped + total_renamed;
+                callback(processed, total_ops);
+            }
+
+            // V6: Only stop on critical failures (not skipped operations)
+            // Critical failures are those that aren't "destination exists" with skip/rename policy
+            if level_result.failed > 0 {
                 eprintln!(
                     "[Executor] Level {} had {} failures, stopping execution",
-                    level_idx, failed
+                    level_idx, level_result.failed
                 );
                 break;
             }
         }
 
-        Ok(ExecutionResult::partial(total_completed, total_failed, all_errors))
+        Ok(ExecutionResult::partial(
+            total_completed,
+            total_failed,
+            total_skipped,
+            total_renamed,
+            all_errors,
+            all_skipped,
+        ))
     }
 
     /// Execute a single level of operations in parallel
@@ -229,6 +367,130 @@ impl ExecutionEngine {
         Ok((completed, failed, errors))
     }
 
+    /// Execute a single level of operations with conflict configuration
+    async fn execute_level_with_config(
+        &self,
+        entries: Vec<WALEntry>,
+        job_id: &str,
+        config: &ExecutionConfig,
+    ) -> Result<LevelResult, String> {
+        if entries.is_empty() {
+            return Ok(LevelResult::default());
+        }
+
+        // Shared state for collecting results
+        let completed = Arc::new(Mutex::new(0usize));
+        let failed = Arc::new(Mutex::new(0usize));
+        let skipped = Arc::new(Mutex::new(0usize));
+        let renamed = Arc::new(Mutex::new(0usize));
+        let errors = Arc::new(Mutex::new(Vec::<String>::new()));
+        let skipped_reasons = Arc::new(Mutex::new(Vec::<String>::new()));
+
+        let job_id_owned = job_id.to_string();
+        let config = config.clone();
+
+        // Spawn tasks for each operation
+        let mut handles = Vec::new();
+
+        for entry in entries {
+            let entry_id = entry.id;
+            let operation = entry.operation.clone();
+            let completed = Arc::clone(&completed);
+            let failed = Arc::clone(&failed);
+            let skipped = Arc::clone(&skipped);
+            let renamed = Arc::clone(&renamed);
+            let errors = Arc::clone(&errors);
+            let skipped_reasons = Arc::clone(&skipped_reasons);
+            let job_id = job_id_owned.clone();
+            let config = config.clone();
+
+            let handle = tokio::spawn(async move {
+                let manager = WALManager::new();
+
+                // Mark as in progress
+                if let Err(e) = manager.mark_entry_in_progress(&job_id, entry_id) {
+                    eprintln!("[Executor] Failed to mark in progress: {}", e);
+                }
+
+                eprintln!(
+                    "[Executor] Executing operation: {}",
+                    operation.description()
+                );
+
+                // Execute the operation with config
+                match execute_operation_with_config(&operation, &config).await {
+                    Ok(outcome) => {
+                        if let Err(e) = manager.mark_entry_complete(&job_id, entry_id) {
+                            eprintln!("[Executor] Failed to mark complete: {}", e);
+                        }
+                        match outcome {
+                            ExecutionOutcome::Completed => {
+                                let mut c = completed.lock().await;
+                                *c += 1;
+                                eprintln!("[Executor] Operation completed successfully");
+                            }
+                            ExecutionOutcome::CompletedWithRename(new_path) => {
+                                let mut r = renamed.lock().await;
+                                *r += 1;
+                                eprintln!(
+                                    "[Executor] Operation completed with rename to: {}",
+                                    new_path.display()
+                                );
+                            }
+                            ExecutionOutcome::Skipped(reason) => {
+                                let mut s = skipped.lock().await;
+                                *s += 1;
+                                let mut sr = skipped_reasons.lock().await;
+                                sr.push(reason.clone());
+                                eprintln!("[Executor] Operation skipped: {}", reason);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        if let Err(e) = manager.mark_entry_failed(&job_id, entry_id, err.clone()) {
+                            eprintln!("[Executor] Failed to mark failed: {}", e);
+                        }
+                        let mut f = failed.lock().await;
+                        *f += 1;
+                        let mut e = errors.lock().await;
+                        e.push(err.clone());
+                        eprintln!("[Executor] Operation failed: {}", err);
+                    }
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        // Wait for all operations in this level to complete
+        for handle in handles {
+            if let Err(join_err) = handle.await {
+                eprintln!("[Executor] Task panicked: {}", join_err);
+                let mut f = failed.lock().await;
+                *f += 1;
+                let mut errs = errors.lock().await;
+                errs.push(format!("Task panicked: {}", join_err));
+            }
+        }
+
+        // Extract values before constructing result to avoid lifetime issues
+        let completed_val = *completed.lock().await;
+        let failed_val = *failed.lock().await;
+        let skipped_val = *skipped.lock().await;
+        let renamed_val = *renamed.lock().await;
+        let errors_val = errors.lock().await.clone();
+        let skipped_reasons_val = skipped_reasons.lock().await.clone();
+
+        Ok(LevelResult {
+            completed: completed_val,
+            failed: failed_val,
+            skipped: skipped_val,
+            renamed: renamed_val,
+            errors: errors_val,
+            skipped_reasons: skipped_reasons_val,
+        })
+    }
+
     /// Execute a single entry (for recovery or single-operation execution)
     pub async fn execute_entry(
         &self,
@@ -273,6 +535,262 @@ async fn execute_operation(operation: &WALOperationType) -> Result<(), String> {
     tokio::task::spawn_blocking(move || execute_operation_sync(&operation))
         .await
         .map_err(|e| format!("Task failed: {}", e))?
+}
+
+/// Execute a single WAL operation with conflict configuration
+///
+/// Returns ExecutionOutcome to indicate whether the operation completed,
+/// was skipped, or was auto-renamed.
+async fn execute_operation_with_config(
+    operation: &WALOperationType,
+    config: &ExecutionConfig,
+) -> Result<ExecutionOutcome, String> {
+    let operation = operation.clone();
+    let config = config.clone();
+    tokio::task::spawn_blocking(move || execute_operation_sync_with_config(&operation, &config))
+        .await
+        .map_err(|e| format!("Task failed: {}", e))?
+}
+
+/// Generate a unique path by appending a counter suffix
+fn generate_unique_path(original: &Path) -> PathBuf {
+    let parent = original.parent().unwrap_or(Path::new("."));
+    let stem = original
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    let ext = original
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+
+    let mut counter = 1;
+    loop {
+        let candidate = parent.join(format!("{}_{}{}", stem, counter, ext));
+        if !candidate.exists() {
+            return candidate;
+        }
+        counter += 1;
+        if counter > 1000 {
+            // Safety limit - use UUID suffix
+            return parent.join(format!("{}_{}{}", stem, uuid::Uuid::new_v4(), ext));
+        }
+    }
+}
+
+/// Synchronous operation execution with conflict handling
+fn execute_operation_sync_with_config(
+    operation: &WALOperationType,
+    config: &ExecutionConfig,
+) -> Result<ExecutionOutcome, String> {
+    match operation {
+        WALOperationType::CreateFolder { path } => {
+            if path.exists() {
+                return Ok(ExecutionOutcome::Completed);
+            }
+            fs::create_dir_all(path)
+                .map_err(|e| format!("Failed to create folder {}: {}", path.display(), e))?;
+            Ok(ExecutionOutcome::Completed)
+        }
+
+        WALOperationType::Move { source, destination } => {
+            // Source missing handling
+            if !source.exists() {
+                if destination.exists() {
+                    // Source gone but destination exists - likely already moved
+                    return Ok(ExecutionOutcome::Skipped(
+                        "Source missing but destination exists".to_string(),
+                    ));
+                }
+                return Err(format!("Source not found: {}", source.display()));
+            }
+
+            // Destination exists - apply conflict policy
+            if destination.exists() {
+                match config.on_destination_exists {
+                    ConflictPolicy::Skip => {
+                        return Ok(ExecutionOutcome::Skipped(format!(
+                            "Destination exists: {}",
+                            destination.display()
+                        )));
+                    }
+                    ConflictPolicy::AutoRename => {
+                        let new_dest = generate_unique_path(destination);
+                        perform_move(source, &new_dest)?;
+                        return Ok(ExecutionOutcome::CompletedWithRename(new_dest));
+                    }
+                    ConflictPolicy::Fail => {
+                        return Err(format!(
+                            "Destination already exists: {}",
+                            destination.display()
+                        ));
+                    }
+                }
+            }
+
+            if PathValidator::is_protected_path(source) {
+                return Err(format!("Cannot move protected path: {}", source.display()));
+            }
+
+            perform_move(source, destination)?;
+            Ok(ExecutionOutcome::Completed)
+        }
+
+        WALOperationType::Rename { path, new_name } => {
+            if !path.exists() {
+                return Err(format!("Path not found: {}", path.display()));
+            }
+
+            let parent = path
+                .parent()
+                .ok_or_else(|| format!("Cannot determine parent of {}", path.display()))?;
+            let new_path = parent.join(new_name);
+
+            if new_path.exists() {
+                match config.on_destination_exists {
+                    ConflictPolicy::Skip => {
+                        return Ok(ExecutionOutcome::Skipped(format!(
+                            "Target exists: {}",
+                            new_path.display()
+                        )));
+                    }
+                    ConflictPolicy::AutoRename => {
+                        let unique_path = generate_unique_path(&new_path);
+                        fs::rename(path, &unique_path).map_err(|e| {
+                            format!("Failed to rename {} to {}: {}", path.display(), unique_path.display(), e)
+                        })?;
+                        return Ok(ExecutionOutcome::CompletedWithRename(unique_path));
+                    }
+                    ConflictPolicy::Fail => {
+                        return Err(format!("Target already exists: {}", new_path.display()));
+                    }
+                }
+            }
+
+            if PathValidator::is_protected_path(path) {
+                return Err(format!("Cannot rename protected path: {}", path.display()));
+            }
+
+            fs::rename(path, &new_path)
+                .map_err(|e| format!("Failed to rename {} to {}: {}", path.display(), new_name, e))?;
+            Ok(ExecutionOutcome::Completed)
+        }
+
+        WALOperationType::Quarantine { path, quarantine_path } => {
+            execute_operation_sync_with_config(
+                &WALOperationType::Move {
+                    source: path.clone(),
+                    destination: quarantine_path.clone(),
+                },
+                config,
+            )
+        }
+
+        WALOperationType::Copy { source, destination } => {
+            if !source.exists() {
+                return Err(format!("Source not found: {}", source.display()));
+            }
+
+            if destination.exists() {
+                match config.on_destination_exists {
+                    ConflictPolicy::Skip => {
+                        return Ok(ExecutionOutcome::Skipped(format!(
+                            "Destination exists: {}",
+                            destination.display()
+                        )));
+                    }
+                    ConflictPolicy::AutoRename => {
+                        let new_dest = generate_unique_path(destination);
+                        perform_copy(source, &new_dest)?;
+                        return Ok(ExecutionOutcome::CompletedWithRename(new_dest));
+                    }
+                    ConflictPolicy::Fail => {
+                        return Err(format!(
+                            "Destination already exists: {}",
+                            destination.display()
+                        ));
+                    }
+                }
+            }
+
+            perform_copy(source, destination)?;
+            Ok(ExecutionOutcome::Completed)
+        }
+
+        WALOperationType::DeleteFolder { path } => {
+            if !path.exists() {
+                return Ok(ExecutionOutcome::Completed);
+            }
+
+            if PathValidator::is_protected_path(path) {
+                return Err(format!("Cannot delete protected path: {}", path.display()));
+            }
+
+            if !path.is_dir() {
+                fs::remove_file(path)
+                    .map_err(|e| format!("Failed to delete file {}: {}", path.display(), e))?;
+                return Ok(ExecutionOutcome::Completed);
+            }
+
+            let is_empty = fs::read_dir(path)
+                .map(|mut entries| entries.next().is_none())
+                .unwrap_or(false);
+
+            if is_empty {
+                fs::remove_dir(path)
+                    .map_err(|e| format!("Failed to delete folder {}: {}", path.display(), e))?;
+            } else {
+                fs::remove_dir_all(path)
+                    .map_err(|e| format!("Failed to delete folder {}: {}", path.display(), e))?;
+            }
+            Ok(ExecutionOutcome::Completed)
+        }
+    }
+}
+
+/// Helper function to perform a move operation
+fn perform_move(source: &Path, destination: &Path) -> Result<(), String> {
+    // Ensure destination parent exists
+    if let Some(parent) = destination.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create destination directory: {}", e))?;
+        }
+    }
+
+    // Try rename first (same filesystem), fall back to copy+delete
+    if fs::rename(source, destination).is_err() {
+        if source.is_dir() {
+            copy_dir_all(source, destination)?;
+            fs::remove_dir_all(source)
+                .map_err(|e| format!("Failed to remove source: {}", e))?;
+        } else {
+            fs::copy(source, destination)
+                .map_err(|e| format!("Failed to copy: {}", e))?;
+            fs::remove_file(source)
+                .map_err(|e| format!("Failed to remove source: {}", e))?;
+        }
+    }
+    Ok(())
+}
+
+/// Helper function to perform a copy operation
+fn perform_copy(source: &Path, destination: &Path) -> Result<(), String> {
+    // Ensure destination parent exists
+    if let Some(parent) = destination.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create destination directory: {}", e))?;
+        }
+    }
+
+    if source.is_dir() {
+        copy_dir_all(source, destination)
+    } else {
+        fs::copy(source, destination)
+            .map_err(|e| format!("Failed to copy: {}", e))
+            .map(|_| ())
+    }
 }
 
 /// Synchronous operation execution

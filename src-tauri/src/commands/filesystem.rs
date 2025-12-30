@@ -44,6 +44,20 @@ pub enum DragDropError {
     IoError { message: String },
 }
 
+/// Structured error for delete operations
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "type", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum DeleteError {
+    /// File or directory does not exist
+    NotFound { path: String },
+    /// Path is protected and cannot be deleted
+    ProtectedPath { path: String },
+    /// iCloud file needs to be downloaded first (macOS error -8013)
+    ICloudDownloadRequired { path: String, message: String },
+    /// Generic IO error
+    IoError { message: String },
+}
+
 impl From<CycleError> for DragDropError {
     fn from(err: CycleError) -> Self {
         match err {
@@ -262,18 +276,57 @@ pub async fn rename_file(old_path: String, new_path: String) -> Result<(), Strin
     Ok(())
 }
 
+/// Check if a path is an iCloud placeholder file (cloud-only, not downloaded)
+#[cfg(target_os = "macos")]
+fn is_icloud_placeholder(path: &Path) -> bool {
+    // Check for .icloud placeholder files (e.g., ".Document.pdf.icloud")
+    if let Some(name) = path.file_name() {
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.') && name_str.ends_with(".icloud") {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_icloud_placeholder(_path: &Path) -> bool {
+    false
+}
+
 /// Move a file or directory to trash (safe delete)
 #[tauri::command]
-pub async fn delete_to_trash(path: String) -> Result<(), String> {
+pub async fn delete_to_trash(path: String) -> Result<(), DeleteError> {
     let path = Path::new(&path);
 
     if !path.exists() {
-        return Err(format!("Path does not exist: {:?}", path));
+        return Err(DeleteError::NotFound {
+            path: path.to_string_lossy().to_string(),
+        });
     }
 
-    PathValidator::validate_for_delete(path)?;
+    PathValidator::validate_for_delete(path).map_err(|e| DeleteError::ProtectedPath { path: e })?;
 
-    trash::delete(path).map_err(|e| format!("Failed to move to trash: {}", e))?;
+    // Check for iCloud placeholder files on macOS
+    if is_icloud_placeholder(path) {
+        return Err(DeleteError::ICloudDownloadRequired {
+            path: path.to_string_lossy().to_string(),
+            message: "This file is stored in iCloud and needs to be downloaded before it can be moved to Trash. Right-click the file in Finder and select 'Download Now'.".to_string(),
+        });
+    }
+
+    trash::delete(path).map_err(|e| {
+        let err_str = e.to_string();
+        // Detect iCloud error -8013 from the trash crate error message
+        if err_str.contains("-8013") || err_str.contains("needs to be downloaded") {
+            DeleteError::ICloudDownloadRequired {
+                path: path.to_string_lossy().to_string(),
+                message: "This file is stored in iCloud and needs to be downloaded before it can be moved to Trash. Right-click the file in Finder and select 'Download Now'.".to_string(),
+            }
+        } else {
+            DeleteError::IoError { message: err_str }
+        }
+    })?;
 
     Ok(())
 }
@@ -288,6 +341,9 @@ pub async fn create_directory(path: String) -> Result<(), String> {
     }
 
     std::fs::create_dir_all(path).map_err(|e| format!("Failed to create directory: {}", e))?;
+
+    // Notify file system to trigger Finder/iCloud sync
+    crate::file_coordination::notify_directory_created(path)?;
 
     Ok(())
 }
@@ -309,6 +365,9 @@ pub async fn create_file(path: String) -> Result<(), String> {
     }
 
     std::fs::File::create(path).map_err(|e| format!("Failed to create file: {}", e))?;
+
+    // Notify file system to trigger Finder/iCloud sync
+    crate::file_coordination::notify_file_created(path)?;
 
     Ok(())
 }

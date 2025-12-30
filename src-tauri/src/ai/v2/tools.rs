@@ -17,145 +17,88 @@ pub fn get_v2_organize_tools() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "query_semantic_index".to_string(),
-            description: r#"Search files by semantic similarity to find relevant files for organization.
-Use this to understand what files exist before creating rules. Returns files ranked by relevance."#
-                .to_string(),
+            description: "Search files by semantic query. Returns ranked matches.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Natural language query to search for (e.g., 'tax invoices', 'vacation photos', 'project documentation')"
-                    },
-                    "filter_ext": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Optional: Only include files with these extensions (e.g., ['pdf', 'docx'])"
-                    },
-                    "min_size_bytes": {
-                        "type": "integer",
-                        "description": "Optional: Minimum file size in bytes"
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "default": 20,
-                        "description": "Maximum number of results to return (default: 20, max: 30)"
-                    },
-                    "min_similarity": {
-                        "type": "number",
-                        "default": 0.6,
-                        "description": "Minimum similarity score 0.0-1.0 (default: 0.6)"
-                    }
+                    "query": { "type": "string", "description": "Search query" },
+                    "filter_ext": { "type": "array", "items": { "type": "string" } },
+                    "max_results": { "type": "integer", "default": 20 },
+                    "min_similarity": { "type": "number", "default": 0.6 }
                 },
                 "required": ["query"]
             }),
         },
         ToolDefinition {
             name: "apply_organization_rules".to_string(),
-            description: r#"Apply organization rules to match files and generate operations in bulk.
-Rules use a simple DSL to match files and specify actions.
-
-Rule DSL examples:
-- file.ext == 'pdf'
-- file.ext IN ['jpg', 'png', 'gif']
-- file.name.contains('invoice')
-- file.size > 10MB
-- file.vector_similarity('tax document') > 0.8
-- NOT file.isHidden AND file.modifiedAt > '2024-01-01'
-- (file.ext == 'jpg' OR file.ext == 'png') AND file.size < 5MB
-
-Available fields: name, ext, size, path, modifiedAt, createdAt, mimeType, isHidden
-Available operators: ==, !=, >, <, >=, <=, IN, MATCHES
-Available functions: contains(), startsWith(), endsWith(), matches(), vector_similarity()"#
-                .to_string(),
+            description: "Apply DSL rules to generate file operations. See system prompt for DSL syntax.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "rules": {
                         "type": "array",
-                        "description": "Organization rules to apply",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "name": {
-                                    "type": "string",
-                                    "description": "Human-readable rule name"
-                                },
-                                "if": {
-                                    "type": "string",
-                                    "description": "Rule expression in DSL syntax"
-                                },
-                                "thenMoveTo": {
-                                    "type": "string",
-                                    "description": "Destination folder to move matching files to (relative to target folder or absolute)"
-                                },
-                                "thenRenameTo": {
-                                    "type": "string",
-                                    "description": "New name pattern. Supports: {name}, {ext}, {date}"
-                                },
-                                "priority": {
-                                    "type": "integer",
-                                    "description": "Rule priority (higher = earlier execution)"
-                                }
+                                "name": { "type": "string" },
+                                "if": { "type": "string" },
+                                "thenMoveTo": { "type": "string" },
+                                "thenRenameTo": { "type": "string" },
+                                "priority": { "type": "integer" }
                             },
                             "required": ["name", "if"]
                         }
                     },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["append", "replace"],
-                        "default": "append",
-                        "description": "Whether to append to or replace existing operations (default: append)"
-                    }
+                    "mode": { "type": "string", "enum": ["append", "replace"], "default": "append" }
                 },
                 "required": ["rules"]
             }),
         },
         ToolDefinition {
             name: "preview_operations".to_string(),
-            description: r#"Preview the planned operations before committing.
-Use this to verify the plan looks correct before finalizing."#
-                .to_string(),
+            description: "Preview planned operations before committing.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "group_by": {
                         "type": "string",
-                        "enum": ["operation_type", "destination_folder", "source_folder", "rule_name"],
-                        "default": "operation_type",
-                        "description": "How to group the preview (default: operation_type)"
+                        "enum": ["operation_type", "destination_folder"],
+                        "default": "operation_type"
                     },
-                    "include_unchanged": {
-                        "type": "boolean",
-                        "default": false,
-                        "description": "Include count of files that won't be changed"
-                    }
+                    "include_unchanged": { "type": "boolean", "default": false }
                 }
             }),
         },
         ToolDefinition {
             name: "commit_plan".to_string(),
-            description: r#"Finalize and submit the organization plan.
-Call this ONCE when you're satisfied with the preview. This ends the planning session."#
-                .to_string(),
+            description: "Finalize plan. Call ONCE when satisfied.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "description": {
-                        "type": "string",
-                        "description": "Brief summary of what this organization plan does"
-                    },
-                    "confirm": {
-                        "type": "boolean",
-                        "description": "Must be true to commit the plan"
-                    },
-                    "dry_run": {
-                        "type": "boolean",
-                        "default": false,
-                        "description": "If true, return the plan without marking as final"
-                    }
+                    "description": { "type": "string" },
+                    "confirm": { "type": "boolean" },
+                    "dry_run": { "type": "boolean", "default": false }
                 },
                 "required": ["description", "confirm"]
+            }),
+        },
+        ToolDefinition {
+            name: "inspect_pattern_sample".to_string(),
+            description: "Get sample files from a pattern to check dates/content. Use to examine a specific pattern more closely.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pattern_regex": {
+                        "type": "string",
+                        "description": "Regex pattern to match files (e.g., 'IMG_\\\\d+' for IMG_0001, IMG_0002, etc.)"
+                    },
+                    "max_samples": {
+                        "type": "integer",
+                        "description": "Maximum number of sample files to return (default 5)",
+                        "default": 5
+                    }
+                },
+                "required": ["pattern_regex"]
             }),
         },
     ]
@@ -182,6 +125,7 @@ pub fn execute_v2_tool(
         "apply_organization_rules" => execute_apply_rules(input, vfs),
         "preview_operations" => execute_preview(input, vfs),
         "commit_plan" => execute_commit(input, vfs),
+        "inspect_pattern_sample" => execute_inspect_pattern_sample(input, vfs),
         _ => V2ToolResult::Error(format!("Unknown tool: {}", name)),
     }
 }
@@ -466,6 +410,111 @@ fn execute_commit(input: &serde_json::Value, vfs: &ShadowVFS) -> V2ToolResult {
     }
 }
 
+/// V5: Execute inspect_pattern_sample tool
+///
+/// Returns sample files matching a regex pattern for detailed inspection.
+fn execute_inspect_pattern_sample(input: &serde_json::Value, vfs: &ShadowVFS) -> V2ToolResult {
+    let pattern = match input.get("pattern_regex").and_then(|v| v.as_str()) {
+        Some(p) => p,
+        None => return V2ToolResult::Error("Missing 'pattern_regex' parameter".to_string()),
+    };
+
+    let max_samples = input
+        .get("max_samples")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(5) as usize;
+
+    eprintln!(
+        "[V2Tool] inspect_pattern_sample: pattern='{}', max_samples={}",
+        pattern, max_samples
+    );
+
+    // Compile the regex
+    let regex = match regex::Regex::new(pattern) {
+        Ok(r) => r,
+        Err(e) => return V2ToolResult::Error(format!("Invalid regex pattern: {}", e)),
+    };
+
+    // Find matching files
+    let files = vfs.files();
+    let matching: Vec<_> = files
+        .iter()
+        .filter(|f| regex.is_match(&f.name))
+        .collect();
+
+    if matching.is_empty() {
+        return V2ToolResult::Continue(format!(
+            "No files matched pattern '{}'. Check the regex syntax.",
+            pattern
+        ));
+    }
+
+    // Get samples: first, middle, last, and some random
+    let mut samples = Vec::new();
+    let len = matching.len();
+
+    // First file
+    samples.push(matching[0]);
+
+    // Middle file(s)
+    if len > 2 {
+        samples.push(matching[len / 2]);
+    }
+
+    // Last file
+    if len > 1 {
+        samples.push(matching[len - 1]);
+    }
+
+    // Additional quarter points if we have more samples to fill
+    if samples.len() < max_samples && len > 4 {
+        let q1 = len / 4;
+        let q3 = (len * 3) / 4;
+        // Check by path to avoid needing PartialEq
+        let sample_paths: Vec<&str> = samples.iter().map(|f| f.path.as_str()).collect();
+        if q1 > 0 && !sample_paths.contains(&matching[q1].path.as_str()) {
+            samples.push(matching[q1]);
+        }
+        if q3 < len && !sample_paths.contains(&matching[q3].path.as_str()) {
+            samples.push(matching[q3]);
+        }
+    }
+
+    samples.truncate(max_samples);
+
+    // Format output
+    let mut output = format!(
+        "Pattern '{}' matched {} files. Here are {} samples:\n\n",
+        pattern,
+        matching.len(),
+        samples.len()
+    );
+
+    for file in &samples {
+        let modified = file.modified_at
+            .and_then(|ts| chrono::DateTime::from_timestamp_millis(ts))
+            .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        output.push_str(&format!(
+            "- {} (ext: {}, size: {}, modified: {})\n",
+            file.name,
+            file.ext.as_deref().unwrap_or("none"),
+            format_size(file.size),
+            modified
+        ));
+    }
+
+    if matching.len() > samples.len() {
+        output.push_str(&format!(
+            "\n... and {} more files match this pattern\n",
+            matching.len() - samples.len()
+        ));
+    }
+
+    V2ToolResult::Continue(output)
+}
+
 /// Format file size for display
 fn format_size(bytes: u64) -> String {
     const KB: u64 = 1024;
@@ -490,12 +539,13 @@ mod tests {
     #[test]
     fn test_tool_definitions() {
         let tools = get_v2_organize_tools();
-        assert_eq!(tools.len(), 4);
+        assert_eq!(tools.len(), 5);
 
         let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"query_semantic_index"));
         assert!(names.contains(&"apply_organization_rules"));
         assert!(names.contains(&"preview_operations"));
         assert!(names.contains(&"commit_plan"));
+        assert!(names.contains(&"inspect_pattern_sample"));
     }
 }
