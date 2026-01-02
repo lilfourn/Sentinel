@@ -27,7 +27,8 @@ export type DropInvalidReason =
   | 'name_collision' // File already exists at destination
   | 'permission_denied' // No write permission
   | 'not_directory' // Target is not a directory
-  | 'protected_path'; // System protected path
+  | 'protected_path' // System protected path
+  | 'symlink_loop'; // Symlink loop detected
 
 /** Backend drag-drop error structure (matches Rust DragDropError) */
 export interface DragDropError {
@@ -40,6 +41,7 @@ export interface DragDropError {
     | 'SOURCE_NOT_FOUND'
     | 'TARGET_NOT_DIRECTORY'
     | 'PROTECTED_PATH'
+    | 'SYMLINK_LOOP'
     | 'IO_ERROR';
   path?: string;
   source?: string;
@@ -61,6 +63,7 @@ export function mapErrorToReason(
     PERMISSION_DENIED: 'permission_denied',
     TARGET_NOT_DIRECTORY: 'not_directory',
     PROTECTED_PATH: 'protected_path',
+    SYMLINK_LOOP: 'symlink_loop',
   };
   return errorType ? mapping[errorType] : undefined;
 }
@@ -74,4 +77,5 @@ export const DROP_INVALID_MESSAGES: Record<DropInvalidReason, string> = {
   permission_denied: 'Permission denied',
   not_directory: 'Can only drop into folders',
   protected_path: 'Cannot modify protected folder',
+  symlink_loop: 'Cannot drop: symlink loop detected',
 };

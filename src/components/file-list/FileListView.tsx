@@ -329,6 +329,10 @@ export function FileListView({ entries }: FileListViewProps) {
   const handleDragStart = useCallback(
     (entry: FileEntry, e: React.DragEvent) => {
       console.log('[FileListView] handleDragStart:', { path: entry.path, isDirectory: entry.isDirectory });
+
+      // Reset drag counter to fix stale state from cancelled/interrupted drags
+      dragCounter.current = 0;
+
       // Get all selected items, or just this one if not selected
       const itemsToDrag = selectedPaths.has(entry.path)
         ? entries.filter((ent) => selectedPaths.has(ent.path))

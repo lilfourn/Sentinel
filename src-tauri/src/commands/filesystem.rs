@@ -40,6 +40,8 @@ pub enum DragDropError {
     TargetNotDirectory { path: String },
     /// Protected path
     ProtectedPath { path: String },
+    /// Symlink loop detected
+    SymlinkLoop { path: String },
     /// Generic IO error
     IoError { message: String },
 }
@@ -77,6 +79,9 @@ impl From<CycleError> for DragDropError {
                 path: p.to_string_lossy().to_string(),
             },
             CycleError::TargetNotFound(p) => DragDropError::SourceNotFound {
+                path: p.to_string_lossy().to_string(),
+            },
+            CycleError::SymlinkLoop(p) => DragDropError::SymlinkLoop {
                 path: p.to_string_lossy().to_string(),
             },
         }
@@ -388,6 +393,15 @@ pub async fn move_file(source: String, destination: String) -> Result<(), String
 
     if PathValidator::is_protected_path(src) {
         return Err(format!("Cannot move protected path: {:?}", src));
+    }
+
+    // Cycle detection for directory moves
+    // Prevents moving a directory into itself or its descendants
+    if src.is_dir() {
+        if let Some(dst_parent) = dst.parent() {
+            cycle_detection::would_create_cycle(src, dst_parent)
+                .map_err(|e| format!("Operation would create cycle: {}", e))?;
+        }
     }
 
     // Try rename first (same filesystem), fall back to copy+delete

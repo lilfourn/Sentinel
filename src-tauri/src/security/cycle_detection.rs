@@ -19,6 +19,8 @@ pub enum CycleError {
     SourceNotFound(PathBuf),
     /// Target path does not exist or cannot be resolved
     TargetNotFound(PathBuf),
+    /// Symlink loop detected (would cause ELOOP)
+    SymlinkLoop(PathBuf),
 }
 
 impl std::fmt::Display for CycleError {
@@ -43,11 +45,61 @@ impl std::fmt::Display for CycleError {
             CycleError::TargetNotFound(p) => {
                 write!(f, "Target path not found: {:?}", p)
             }
+            CycleError::SymlinkLoop(p) => {
+                write!(f, "Symlink loop detected: {:?}", p)
+            }
         }
     }
 }
 
 impl std::error::Error for CycleError {}
+
+/// Check for symlink loops that would cause ELOOP errors.
+///
+/// Follows symlink chains and detects:
+/// 1. Circular symlink references (A -> B -> A)
+/// 2. Excessively deep symlink chains (> MAX_DEPTH)
+///
+/// # Arguments
+/// * `path` - The path to check for symlink loops
+///
+/// # Returns
+/// * `Ok(())` if path is safe (no loops)
+/// * `Err(CycleError::SymlinkLoop)` if a loop is detected
+pub fn check_symlink_loop(path: &Path) -> Result<(), CycleError> {
+    const MAX_DEPTH: usize = 40; // POSIX SYMLOOP_MAX is typically 40
+
+    let mut current = path.to_path_buf();
+    let mut visited = std::collections::HashSet::new();
+
+    while current.is_symlink() {
+        let key = current.to_string_lossy().to_string();
+
+        // Check for direct loop or excessive depth
+        if visited.contains(&key) || visited.len() > MAX_DEPTH {
+            return Err(CycleError::SymlinkLoop(path.to_path_buf()));
+        }
+        visited.insert(key);
+
+        // Read the symlink target
+        match std::fs::read_link(&current) {
+            Ok(target) => {
+                current = if target.is_absolute() {
+                    target
+                } else {
+                    // Resolve relative symlink against parent directory
+                    current
+                        .parent()
+                        .unwrap_or(Path::new("/"))
+                        .join(target)
+                };
+            }
+            Err(_) => break, // Can't read link, stop checking
+        }
+    }
+
+    Ok(())
+}
 
 /// Check if moving `source` into `target` would create a cycle.
 ///
@@ -63,6 +115,11 @@ impl std::error::Error for CycleError {}
 /// * `Ok(())` if the move is safe
 /// * `Err(CycleError)` if the move would create a cycle
 pub fn would_create_cycle(source: &Path, target: &Path) -> Result<(), CycleError> {
+    // Pre-check for symlink loops before canonicalization
+    // This prevents hangs/errors from circular symlinks
+    check_symlink_loop(source)?;
+    check_symlink_loop(target)?;
+
     // Canonicalize paths to resolve symlinks and normalize
     let source_canonical = source
         .canonicalize()

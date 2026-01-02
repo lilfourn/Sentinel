@@ -2,6 +2,8 @@
 //!
 //! Checks subscription tier and daily usage before allowing API calls.
 
+use chrono::Utc;
+
 use super::types::{
     DailyLimits, DailyUsage, LimitCheckResult, LimitDenialReason, SubscriptionCache,
     SubscriptionStatus, SubscriptionTier,
@@ -31,7 +33,32 @@ impl LimitEnforcer {
         let status = subscription.status;
 
         // Check subscription status
-        if status != SubscriptionStatus::Active && status != SubscriptionStatus::Trialing {
+        // Allow active and trialing subscriptions
+        // Also allow canceled subscriptions if the period hasn't ended yet
+        // (user canceled but paid through end of billing period)
+        let is_subscription_valid = match status {
+            SubscriptionStatus::Active | SubscriptionStatus::Trialing => true,
+            SubscriptionStatus::Canceled => {
+                // Check if the subscription period is still valid
+                if let Some(period_end) = subscription.current_period_end {
+                    let now_ms = Utc::now().timestamp_millis();
+                    let still_valid = period_end > now_ms;
+                    if still_valid {
+                        eprintln!(
+                            "[LimitEnforcer] Canceled subscription still valid until {}",
+                            period_end
+                        );
+                    }
+                    still_valid
+                } else {
+                    // No period end set, treat as expired
+                    false
+                }
+            }
+            SubscriptionStatus::PastDue | SubscriptionStatus::Incomplete => false,
+        };
+
+        if !is_subscription_valid {
             return LimitCheckResult::Denied {
                 reason: LimitDenialReason::SubscriptionInactive { status },
                 upgrade_url: Some(Self::get_upgrade_url()),

@@ -239,8 +239,8 @@ impl GrokOrganizer {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "unknown".to_string());
 
-            // Only emit progress every 50 files to avoid UI spam
-            if (i + 1) % 50 == 0 || i + 1 == all_file_paths.len() {
+            // Emit progress every 5 files for responsive UI updates
+            if (i + 1) % 5 == 0 || i + 1 == all_file_paths.len() {
                 progress_callback(AnalysisProgress {
                     phase: AnalysisPhase::CheckingCache,
                     current: i + 1,

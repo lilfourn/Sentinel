@@ -2,6 +2,8 @@ import { createContext, useContext, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDragDrop } from '../../hooks/useDragDrop';
 import { useSelectionStore } from '../../stores/selection-store';
+import { showError } from '../../stores/toast-store';
+import { DROP_INVALID_MESSAGES } from '../../types/drag-drop';
 import type { DragState, DropTarget } from '../../types/drag-drop';
 
 interface DragDropContextValue {
@@ -43,6 +45,43 @@ export function DragDropProvider({ children }: DragDropProviderProps) {
     },
     onDropError: (error) => {
       console.error('[DragDropProvider] onDropError:', error);
+
+      // Parse error and show user-friendly toast
+      let message = 'Failed to complete the operation';
+
+      if (typeof error === 'string') {
+        // Check for known error patterns in string errors
+        if (error.toLowerCase().includes('cycle')) {
+          message = DROP_INVALID_MESSAGES.cycle_descendant;
+        } else if (error.toLowerCase().includes('protected')) {
+          message = DROP_INVALID_MESSAGES.protected_path;
+        } else if (error.toLowerCase().includes('exists')) {
+          message = DROP_INVALID_MESSAGES.name_collision;
+        } else if (error.toLowerCase().includes('symlink')) {
+          message = DROP_INVALID_MESSAGES.symlink_loop;
+        } else {
+          message = error;
+        }
+      } else if (error && typeof error === 'object') {
+        // Handle structured error objects from Rust backend
+        const typedError = error as { type?: string; message?: string };
+        if (typedError.type) {
+          const typeToMessage: Record<string, string> = {
+            CYCLE_DETECTED_SELF: DROP_INVALID_MESSAGES.cycle_self,
+            CYCLE_DETECTED_DESCENDANT: DROP_INVALID_MESSAGES.cycle_descendant,
+            TARGET_IS_SELECTED: DROP_INVALID_MESSAGES.target_selected,
+            NAME_COLLISION: DROP_INVALID_MESSAGES.name_collision,
+            PERMISSION_DENIED: DROP_INVALID_MESSAGES.permission_denied,
+            PROTECTED_PATH: DROP_INVALID_MESSAGES.protected_path,
+            SYMLINK_LOOP: DROP_INVALID_MESSAGES.symlink_loop,
+          };
+          message = typeToMessage[typedError.type] || typedError.message || message;
+        } else if (typedError.message) {
+          message = typedError.message;
+        }
+      }
+
+      showError('Drop Failed', message);
     },
     onDragCancel: () => {
       console.log('[DragDropProvider] onDragCancel');

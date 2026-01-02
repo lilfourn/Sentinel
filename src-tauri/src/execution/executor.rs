@@ -3,7 +3,7 @@
 //! Executes WAL operations using the DAG-based dependency graph.
 //! Operations at the same level are executed in parallel using tokio tasks.
 
-use crate::security::PathValidator;
+use crate::security::{cycle_detection, PathValidator};
 use crate::wal::entry::{WALEntry, WALJournal, WALOperationType, WALStatus};
 use crate::wal::journal::WALManager;
 use serde::{Deserialize, Serialize};
@@ -700,6 +700,15 @@ fn execute_operation_sync_with_config(
 
 /// Helper function to perform a move operation
 fn perform_move(source: &Path, destination: &Path) -> Result<(), String> {
+    // Defense-in-depth: Re-validate cycle at execution time
+    // This catches race conditions where filesystem changed since validation
+    if source.is_dir() {
+        if let Some(dest_parent) = destination.parent() {
+            cycle_detection::would_create_cycle(source, dest_parent)
+                .map_err(|e| format!("Cycle detected at execution time: {}", e))?;
+        }
+    }
+
     // Ensure destination parent exists
     if let Some(parent) = destination.parent() {
         if !parent.exists() {

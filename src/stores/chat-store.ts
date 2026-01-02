@@ -261,6 +261,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
     let unlistenThinking: UnlistenFn | null = null;
     let unlistenComplete: UnlistenFn | null = null;
     let unlistenError: UnlistenFn | null = null;
+    let unlistenLimitError: UnlistenFn | null = null;
     let listenersActive = true;
 
     // Cleanup function - stored at module scope for unmount handling
@@ -273,6 +274,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
       unlistenThought?.();
       unlistenComplete?.();
       unlistenError?.();
+      unlistenLimitError?.();
     };
 
     // Store cleanup ref at module scope
@@ -344,7 +346,18 @@ export const useChatStore = create<ChatState & ChatActions>()(
       unlistenError = await listen<{ message: string }>('chat:error', (event) => {
         get()._setError(event.payload.message);
         get()._finishStream(assistantMessage.id);
+        // Revert optimistic usage increment - failed requests don't count
+        useSubscriptionStore.getState().refreshUsage();
         cleanupListeners(); // Cleanup after error
+      });
+
+      // Listen for limit errors (subscription/quota exceeded)
+      unlistenLimitError = await listen<{ reason: string; upgradeUrl?: string }>('chat:limit-error', (event) => {
+        get()._setError(event.payload.reason);
+        get()._finishStream(assistantMessage.id);
+        // Revert optimistic usage increment - denied requests don't count
+        useSubscriptionStore.getState().refreshUsage();
+        cleanupListeners(); // Cleanup after limit error
       });
 
       // Convert context items to format expected by backend
@@ -366,6 +379,8 @@ export const useChatStore = create<ChatState & ChatActions>()(
 
       // Invoke backend command
       // The request param maps to ChatStreamRequest struct with camelCase fields
+      // Get userId from subscription store for billing tracking
+      const userId = useSubscriptionStore.getState().userId;
       await invoke('chat_stream', {
         request: {
           message: text,
@@ -373,6 +388,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
           model,
           history: conversationHistory,
           extendedThinking,
+          userId,
         },
       });
 
@@ -385,6 +401,8 @@ export const useChatStore = create<ChatState & ChatActions>()(
       const errorMessage = err instanceof Error ? err.message : String(err);
       get()._setError(errorMessage);
       get()._finishStream(assistantMessage.id);
+      // Revert optimistic usage increment - failed requests don't count
+      useSubscriptionStore.getState().refreshUsage();
       cleanupListeners();
     }
     // NO finally block - listeners are cleaned up in complete/error handlers
@@ -395,6 +413,8 @@ export const useChatStore = create<ChatState & ChatActions>()(
     if (currentStreamId) {
       invoke('abort_chat').catch(console.error);
       get()._finishStream(currentStreamId);
+      // Revert optimistic usage increment - aborted requests don't count
+      useSubscriptionStore.getState().refreshUsage();
       // Cleanup any active listeners
       activeListenerCleanup?.();
     }

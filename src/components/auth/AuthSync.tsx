@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useUser, useAuth } from "@clerk/clerk-react";
 import { useMutation, useQuery } from "convex/react";
+import { invoke } from "@tauri-apps/api/core";
 import { api } from "../../../convex/_generated/api";
 import { setAuthTokenGetter, useSubscriptionStore } from "../../stores/subscription-store";
 
@@ -39,16 +40,18 @@ export function AuthSync() {
     }
   }, [subscription, isSignedIn]);
 
-  // Sync subscription data from Convex to store
+  // Sync subscription data from Convex to both frontend store AND Rust backend cache
   // IMPORTANT: Always update when subscription data is available to prevent stale state
   useEffect(() => {
-    if (subscription) {
+    if (subscription && user?.id) {
       console.log("[AuthSync] Syncing subscription from Convex:", {
         tier: subscription.tier,
         status: subscription.status,
         cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
         stripeCustomerId: subscription.stripeCustomerId,
       });
+
+      // Update frontend Zustand store
       useSubscriptionStore.setState({
         tier: subscription.tier,
         status: subscription.status,
@@ -59,12 +62,25 @@ export function AuthSync() {
         lastSyncedAt: Date.now(),
         error: null,
       });
+
+      // CRITICAL: Also sync to Rust backend cache for billing checks
+      // Without this, chat_stream defaults to FREE tier and denies requests
+      invoke('update_subscription_cache', {
+        userId: user.id,
+        tier: subscription.tier,
+        status: subscription.status,
+        stripeCustomerId: subscription.stripeCustomerId ?? null,
+        stripeSubscriptionId: 'stripeSubscriptionId' in subscription ? subscription.stripeSubscriptionId ?? null : null,
+        currentPeriodEnd: subscription.currentPeriodEnd ?? null,
+      }).catch((err) => {
+        console.error("[AuthSync] Failed to sync subscription to Rust backend:", err);
+      });
     } else if (subscription === null && isSignedIn) {
       // User is signed in but subscription query returned null (shouldn't happen normally)
       console.warn("[AuthSync] Subscription query returned null for signed-in user");
       useSubscriptionStore.setState({ isLoading: false });
     }
-  }, [subscription, isSignedIn]);
+  }, [subscription, isSignedIn, user?.id]);
 
   // Create stable token getter for subscription store
   const getConvexToken = useCallback(async () => {
