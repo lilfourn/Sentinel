@@ -25,3 +25,8 @@ dist-ssr
 
 # Auto Claude data directory
 .auto-claude/
+
+# Environment files with secrets
+.env
+.env.local
+.env.*.local

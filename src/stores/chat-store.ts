@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { useSubscriptionStore, chatModelToSubscriptionModel } from './subscription-store';
 
 // ============================================================================
 // MODULE-LEVEL STATE FOR LISTENER CLEANUP
@@ -45,7 +46,8 @@ export interface ChatMessage {
   content: string;
   timestamp: number;
   thoughts?: ThoughtStep[];
-  contextRefs?: string[];  // IDs of ContextItems used
+  /** Attached context items (files/folders) for this message */
+  contextItems?: ContextItem[];
   isStreaming?: boolean;
   /** Extended thinking content (Claude's internal reasoning) */
   thinking?: string;
@@ -222,13 +224,13 @@ export const useChatStore = create<ChatState & ChatActions>()(
 
     if (!text.trim()) return;
 
-    // Create user message
+    // Create user message with attached context items
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
       content: text,
       timestamp: Date.now(),
-      contextRefs: activeContext.map(c => c.id),
+      contextItems: activeContext.length > 0 ? [...activeContext] : undefined,
     };
 
     // Create placeholder assistant message
@@ -246,7 +248,12 @@ export const useChatStore = create<ChatState & ChatActions>()(
       status: 'thinking',
       error: null,
       currentStreamId: assistantMessage.id,
+      activeContext: [], // Clear context after attaching to message
     });
+
+    // Optimistic update: increment usage counter immediately for responsive UI
+    const modelType = chatModelToSubscriptionModel(model);
+    useSubscriptionStore.getState().incrementUsage(modelType, extendedThinking);
 
     // Set up event listeners
     let unlistenToken: UnlistenFn | null = null;
@@ -328,6 +335,8 @@ export const useChatStore = create<ChatState & ChatActions>()(
       // Listen for completion - cleanup listeners HERE, not in finally
       unlistenComplete = await listen('chat:complete', () => {
         get()._finishStream(assistantMessage.id);
+        // Sync usage with backend to ensure accuracy
+        useSubscriptionStore.getState().refreshUsage();
         cleanupListeners(); // Cleanup after completion
       });
 

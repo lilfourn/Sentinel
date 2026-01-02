@@ -5,6 +5,7 @@
 //! - Folders → V5 Hologram compression
 //! - Images → Base64 for vision (future)
 
+use crate::ai::grok::document_parser::{is_parseable, DocumentParser};
 use crate::ai::rules::VirtualFile;
 use crate::ai::v2::compression::generate_hologram;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
@@ -164,9 +165,57 @@ fn hydrate_folder_hologram(path: &str, name: &str) -> Result<String, String> {
 }
 
 /// Read text content from a file (truncated)
+/// Uses DocumentParser for supported formats (PDF, DOCX, XLSX, etc.)
 fn hydrate_file_content(path: &str, name: &str) -> Result<String, String> {
     eprintln!("[ChatContext] Reading file: {}", path);
 
+    let file_path = Path::new(path);
+    let ext = file_path.extension().and_then(|e| e.to_str());
+
+    // Use document parser for supported formats (PDF, DOCX, XLSX, etc.)
+    if is_parseable(ext) {
+        let parser = DocumentParser::new();
+        match parser.parse(file_path) {
+            Ok(parsed) => {
+                eprintln!(
+                    "[ChatContext] Document parsed: {} chars, method: {:?}",
+                    parsed.text.len(),
+                    parsed.method
+                );
+
+                // Truncate to 20KB for context window
+                let truncated = if parsed.text.len() > MAX_FILE_CONTENT {
+                    format!(
+                        "{}...\n\n[Truncated: {} chars total]",
+                        &parsed.text[..MAX_FILE_CONTENT],
+                        parsed.text.len()
+                    )
+                } else {
+                    parsed.text.clone()
+                };
+
+                // Format with metadata
+                let mut header = format!("### File: {}\nPath: {}\n", name, path);
+                if let Some(pages) = parsed.metadata.page_count {
+                    header.push_str(&format!("Pages: {}\n", pages));
+                }
+                if let Some(words) = parsed.metadata.word_count {
+                    header.push_str(&format!("Words: {}\n", words));
+                }
+
+                return Ok(format!("{}\n```\n{}\n```", header, truncated));
+            }
+            Err(e) => {
+                eprintln!(
+                    "[ChatContext] Document parse failed, falling back to raw read: {}",
+                    e
+                );
+                // Fall through to plain text read
+            }
+        }
+    }
+
+    // Fallback: plain text read (original behavior)
     let content =
         fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {}", path, e))?;
 

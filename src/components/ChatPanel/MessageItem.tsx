@@ -1,7 +1,7 @@
 import { useState, memo } from 'react';
 import Markdown from 'react-markdown';
-import { Copy, ThumbsUp, ThumbsDown, RotateCcw, Brain, ChevronRight } from 'lucide-react';
-import type { ChatMessage } from '../../stores/chat-store';
+import { Copy, ThumbsUp, ThumbsDown, RotateCcw, Brain, ChevronRight, File, Folder, Image } from 'lucide-react';
+import type { ChatMessage, ContextItem } from '../../stores/chat-store';
 import { ThoughtAccordion } from './ThoughtAccordion';
 import { StreamingIndicator, ThinkingDots, ShimmerText } from './StreamingIndicator';
 
@@ -51,8 +51,40 @@ function arePropsEqual(prev: MessageItemProps, next: MessageItemProps): boolean 
     p.isStreaming === n.isStreaming &&
     p.isThinking === n.isThinking &&
     p.thoughts?.length === n.thoughts?.length &&
+    p.contextItems?.length === n.contextItems?.length &&
     // Check last thought update (for streaming thoughts)
     p.thoughts?.[p.thoughts.length - 1]?.output === n.thoughts?.[n.thoughts.length - 1]?.output
+  );
+}
+
+/**
+ * Display attached files/folders for a message
+ */
+function AttachmentChips({ items }: { items: ContextItem[] }) {
+  if (!items || items.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap gap-1 mt-1.5 justify-end">
+      {items.map((item) => {
+        const Icon = item.type === 'folder' ? Folder : item.type === 'image' ? Image : File;
+        const iconColor = item.type === 'folder'
+          ? 'text-blue-400'
+          : item.type === 'image'
+            ? 'text-purple-400'
+            : 'text-gray-400';
+
+        return (
+          <div
+            key={item.id}
+            className="flex items-center gap-1 px-2 py-0.5 bg-white/5 rounded text-[11px] text-gray-400"
+            title={item.path}
+          >
+            <Icon size={10} className={iconColor} />
+            <span className="max-w-32 truncate">{item.name}</span>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -76,6 +108,10 @@ export const MessageItem = memo(function MessageItem({ message }: MessageItemPro
         <div className="inline-block max-w-[85%] text-sm rounded-2xl px-4 py-2.5 bg-[#1e1e1e] text-gray-100">
           {message.content}
         </div>
+        {/* Attached files */}
+        {message.contextItems && message.contextItems.length > 0 && (
+          <AttachmentChips items={message.contextItems} />
+        )}
         {/* Timestamp */}
         <div className="text-[11px] text-gray-500 mt-1.5 mr-1">
           {new Date(message.timestamp).toLocaleTimeString([], {

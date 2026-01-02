@@ -1,62 +1,34 @@
-//! Grok AI Integration Module
-//!
-//! Multi-agent architecture using Grok's 2M context window:
+//! Multi-Model File Analysis Pipeline
 //!
 //! ## Architecture
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────────┐
-//! │                     ORCHESTRATOR AGENT                          │
-//! │  - Receives file summaries from explore agents                  │
-//! │  - Uses 2M context to hold all summaries at once                │
-//! │  - Creates optimal folder architecture                          │
-//! │  - Generates execution plan                                     │
-//! └──────────────────────────┬──────────────────────────────────────┘
-//!                            │ aggregates
-//!        ┌───────────────────┼───────────────────┐
-//!        │                   │                   │
-//!        ▼                   ▼                   ▼
-//! ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-//! │ EXPLORE     │     │ EXPLORE     │     │ EXPLORE     │
-//! │ AGENT 1     │     │ AGENT 2     │     │ AGENT N     │
-//! │             │     │             │     │             │
-//! │ Batch 1-50  │     │ Batch 51-100│     │ Batch N     │
-//! │ PDFs/Docs   │     │ PDFs/Docs   │     │ PDFs/Docs   │
-//! └─────────────┘     └─────────────┘     └─────────────┘
-//!        │                   │                   │
-//!        ▼                   ▼                   ▼
-//! ┌─────────────────────────────────────────────────────┐
-//! │              VISION API (grok-4-1-fast)             │
-//! │  - Analyzes PDF page images                         │
-//! │  - Extracts content summaries                       │
-//! │  - Suggests filenames                               │
-//! └─────────────────────────────────────────────────────┘
-//! ```
-//!
-//! ## Output Format (Explore Agents → Orchestrator)
-//!
-//! Each explore agent returns summaries in this format:
-//! ```text
-//! filename | content_summary | document_type | suggested_name
+//! │  1. SCAN: Identify all files (PDFs, images, Office docs, text) │
+//! │  2. EXTRACT: Pure Rust text extraction (pdf-extract, calamine) │
+//! │  3. OPENAI WORKERS: GPT-5-nano (2-20 workers, 5 files/batch)   │
+//! │  4. GROK SUMMARIZER: grok-4-1-fast (temp=0.1)                  │
+//! │  5. GROK ORCHESTRATOR: Creates folder structure + assignments  │
+//! │  6. EXECUTE: grok_execute_plan → WAL → Filesystem              │
+//! └─────────────────────────────────────────────────────────────────┘
 //! ```
 
-pub mod cache;
-pub mod client;
+mod cache;
+mod client;
+mod explore_agent;
+mod openai_worker;
+mod orchestrator;
+mod pdf_renderer;
+mod summarizer;
+mod utils;
+mod vision;
+
 pub mod document_parser;
-pub mod explore_agent;
 pub mod integration;
-pub mod orchestrator;
-pub mod pdf_renderer;
 pub mod types;
-pub mod vision;
 
-#[allow(unused_imports)]
-pub use cache::ContentCache;
-#[allow(unused_imports)]
-pub use client::GrokClient;
-#[allow(unused_imports)]
-pub use explore_agent::ExploreAgent;
+// Public API - used by commands/grok.rs
 pub use integration::{GrokOrganizer, ScanResult};
-#[allow(unused_imports)]
-pub use orchestrator::OrchestratorAgent;
-pub use types::*;
+pub use types::{
+    sanitize_filename, sanitize_folder_path, AnalysisPhase, DocumentAnalysis, OrganizationPlan,
+};

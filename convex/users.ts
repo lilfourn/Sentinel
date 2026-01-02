@@ -174,6 +174,24 @@ export const deleteAccount = mutation({
       await ctx.db.delete(stat._id);
     }
 
+    // Delete subscription data
+    const subscriptions = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .collect();
+    for (const sub of subscriptions) {
+      await ctx.db.delete(sub._id);
+    }
+
+    // Delete daily usage records
+    const dailyUsage = await ctx.db
+      .query("dailyUsage")
+      .withIndex("by_user_date", (q) => q.eq("userId", user._id))
+      .collect();
+    for (const usage of dailyUsage) {
+      await ctx.db.delete(usage._id);
+    }
+
     // Delete user
     await ctx.db.delete(user._id);
     return true;

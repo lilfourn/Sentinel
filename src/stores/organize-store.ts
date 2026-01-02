@@ -4,6 +4,28 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { NamingConvention } from '../types/naming-convention';
 import type { OperationStatus, WalEntry, WalRecoveryInfo, WalRecoveryResult } from '../types/ghost';
 
+// Module-level storage for active listener cleanup functions
+// These need to be cleaned up when the organizer is closed
+let activeAnalysisListeners: {
+  unlistenThought: UnlistenFn | null;
+  unlistenProgress: UnlistenFn | null;
+} = {
+  unlistenThought: null,
+  unlistenProgress: null,
+};
+
+// Helper to clean up active listeners
+function cleanupAnalysisListeners() {
+  if (activeAnalysisListeners.unlistenThought) {
+    activeAnalysisListeners.unlistenThought();
+    activeAnalysisListeners.unlistenThought = null;
+  }
+  if (activeAnalysisListeners.unlistenProgress) {
+    activeAnalysisListeners.unlistenProgress();
+    activeAnalysisListeners.unlistenProgress = null;
+  }
+}
+
 // Execution result from the parallel DAG executor
 interface ExecutionResult {
   completedCount: number;
@@ -81,6 +103,14 @@ export interface ExecutionProgressState {
   phase: 'preparing' | 'executing' | 'complete' | 'failed';
 }
 
+// Analysis progress for the progress bar during AI analysis
+export interface AnalysisProgressState {
+  current: number;
+  total: number;
+  phase: string;
+  message: string;
+}
+
 interface OrganizeState {
   // UI state
   isOpen: boolean;
@@ -112,6 +142,9 @@ interface OrganizeState {
 
   // Execution progress (V5: replaces per-operation thoughts)
   executionProgress: ExecutionProgressState | null;
+
+  // Analysis progress for progress bar during AI analysis
+  analysisProgress: AnalysisProgressState | null;
 
   // Recovery state
   hasInterruptedJob: boolean;
@@ -192,6 +225,9 @@ interface OrganizeActions {
 
   // V5: Execution progress updates
   setExecutionProgress: (progress: ExecutionProgressState | null) => void;
+
+  // Analysis progress updates for progress bar
+  setAnalysisProgress: (progress: AnalysisProgressState | null) => void;
 }
 
 let thoughtId = 0;
@@ -285,6 +321,7 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
   conventionSkipped: false,
   latestEvent: null,
   executionProgress: null,
+  analysisProgress: null,
   lastCompletedAt: null,
   completedTargetFolder: null,
 
@@ -351,6 +388,15 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
   },
 
   closeOrganizer: () => {
+    // Abort any running Grok analysis
+    invoke('grok_abort_plan').catch((e) => {
+      console.warn('[Organize] Failed to abort Grok plan:', e);
+    });
+
+    // Clean up any active event listeners
+    cleanupAnalysisListeners();
+
+    // Clear analysis progress immediately
     set({
       isOpen: false,
       targetFolder: null,
@@ -366,6 +412,7 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
       failedOp: null,
       currentOpIndex: -1,
       executionProgress: null,
+      analysisProgress: null,
       userInstruction: '',
       awaitingInstruction: false,
       awaitingConventionSelection: false,
@@ -543,25 +590,65 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
     get().addThought('scanning', `Analyzing ${folderName}...`, 'Using your instructions to design organization');
 
     try {
-      // Set up event listener for streaming thoughts from Rust
-      let unlisten: UnlistenFn | null = null;
+      // Clean up any existing listeners first
+      cleanupAnalysisListeners();
+
+      // Set up event listeners for streaming from Rust
       try {
-        unlisten = await listen<{ type: string; content: string; detail?: string; expandableDetails?: ThoughtDetail[] }>('ai-thought', (event) => {
+        // Listen for ai-thought events (phase transitions)
+        activeAnalysisListeners.unlistenThought = await listen<{ type: string; content: string; detail?: string; expandableDetails?: ThoughtDetail[] }>('ai-thought', (event) => {
           const { type, content, detail, expandableDetails } = event.payload;
           get().addThought(type as ThoughtType, content, detail, expandableDetails);
+        });
+
+        // Listen for analysis-progress events (progress bar updates)
+        activeAnalysisListeners.unlistenProgress = await listen<AnalysisProgressState>('analysis-progress', (event) => {
+          get().setAnalysisProgress(event.payload);
         });
       } catch {
         // Event listener failed, continue without it
       }
 
-      // V6: Call the agentic organize with user instruction
-      const rawPlan = await invoke<OrganizePlan>('generate_organize_plan_agentic', {
-        folderPath: targetFolder,
-        userRequest: userInstruction,
-      });
+      // Check if xAI key is configured for Grok pipeline
+      let rawPlan: OrganizePlan;
+      try {
+        const providers = await invoke<{ provider: string; configured: boolean }[]>('get_configured_providers');
+        const hasXai = providers.find(p => p.provider === 'xai')?.configured;
 
-      // Clean up listener
-      if (unlisten) unlisten();
+        if (hasXai) {
+          // Use new Grok multi-model pipeline
+          get().addThought('analyzing', 'Using multi-model pipeline', 'OpenAI workers + Grok orchestrator');
+
+          // Initialize Grok (will use stored xAI key)
+          await invoke('grok_init', { apiKey: null });
+
+          // Generate plan using Grok pipeline
+          rawPlan = await invoke<OrganizePlan>('grok_generate_plan', {
+            path: targetFolder,
+            userInstruction: userInstruction,
+          });
+        } else {
+          // Fall back to V4 Anthropic-based system
+          get().addThought('analyzing', 'Using V4 organization', 'Claude-based planning');
+          rawPlan = await invoke<OrganizePlan>('generate_organize_plan_agentic', {
+            folderPath: targetFolder,
+            userRequest: userInstruction,
+          });
+        }
+      } catch (providerError) {
+        // If provider check fails, fall back to V4
+        console.warn('[Organize] Provider check failed, using V4:', providerError);
+        rawPlan = await invoke<OrganizePlan>('generate_organize_plan_agentic', {
+          folderPath: targetFolder,
+          userRequest: userInstruction,
+        });
+      }
+
+      // Clean up listeners (analysis complete)
+      cleanupAnalysisListeners();
+
+      // Clear analysis progress since we're done analyzing
+      get().setAnalysisProgress(null);
 
       // Defensive validation of plan structure
       if (!rawPlan) {
@@ -1027,6 +1114,11 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
   // V5: Execution progress updates
   setExecutionProgress: (progress: ExecutionProgressState | null) => {
     set({ executionProgress: progress });
+  },
+
+  // Analysis progress updates for progress bar
+  setAnalysisProgress: (progress: AnalysisProgressState | null) => {
+    set({ analysisProgress: progress });
   },
 }));
 

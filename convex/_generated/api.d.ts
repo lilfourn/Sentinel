@@ -9,7 +9,9 @@
  */
 
 import type * as history from "../history.js";
+import type * as http from "../http.js";
 import type * as settings from "../settings.js";
+import type * as subscriptions from "../subscriptions.js";
 import type * as users from "../users.js";
 
 import type {
@@ -20,7 +22,9 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   history: typeof history;
+  http: typeof http;
   settings: typeof settings;
+  subscriptions: typeof subscriptions;
   users: typeof users;
 }>;
 

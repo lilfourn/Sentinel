@@ -126,25 +126,6 @@ pub enum AnalysisMethod {
     MetadataOnly,
 }
 
-/// Summary format for passing between explore agents and orchestrator
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub struct FileSummary {
-    pub file_name: String,
-    pub content_summary: String,
-    pub suggested_name: String,
-}
-
-impl From<&DocumentAnalysis> for FileSummary {
-    fn from(analysis: &DocumentAnalysis) -> Self {
-        Self {
-            file_name: analysis.file_name.clone(),
-            content_summary: analysis.content_summary.clone(),
-            suggested_name: analysis.suggested_name.clone().unwrap_or_else(|| analysis.file_name.clone()),
-        }
-    }
-}
-
 /// Batch of files for an explore agent
 #[derive(Debug, Clone)]
 pub struct ExploreBatch {
@@ -171,6 +152,107 @@ pub struct FolderAssignment {
     pub destination_folder: String,
     pub new_name: Option<String>,
     pub confidence: f32,
+}
+
+impl FolderAssignment {
+    /// Get the sanitized new filename, falling back to original if not set
+    #[allow(dead_code)]
+    pub fn get_sanitized_new_name(&self) -> String {
+        match &self.new_name {
+            Some(name) if !name.is_empty() => sanitize_filename(name, &self.original_name),
+            _ => self.original_name.clone(),
+        }
+    }
+}
+
+/// Sanitize a filename to follow naming conventions:
+/// - Replace spaces with hyphens
+/// - Remove special characters
+/// - Ensure extension is preserved
+/// - Limit length to 80 characters
+pub fn sanitize_filename(name: &str, original_name: &str) -> String {
+    // Extract original extension
+    let original_ext = std::path::Path::new(original_name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+
+    // Remove any extension from the new name (we'll add the original back)
+    let name_without_ext = if let Some(dot_pos) = name.rfind('.') {
+        let potential_ext = &name[dot_pos + 1..];
+        // Only strip if it looks like an extension (short, alphanumeric)
+        if potential_ext.len() <= 5 && potential_ext.chars().all(|c| c.is_alphanumeric()) {
+            &name[..dot_pos]
+        } else {
+            name
+        }
+    } else {
+        name
+    };
+
+    // Sanitize the name
+    let sanitized: String = name_without_ext
+        .chars()
+        .map(|c| match c {
+            ' ' | '_' => '-',  // Replace spaces and underscores with hyphens
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-', // Replace invalid chars
+            c if c.is_alphanumeric() || c == '-' || c == '.' => c,
+            _ => '-',
+        })
+        .collect();
+
+    // Remove consecutive hyphens
+    let mut result = String::new();
+    let mut last_was_hyphen = false;
+    for c in sanitized.chars() {
+        if c == '-' {
+            if !last_was_hyphen {
+                result.push(c);
+                last_was_hyphen = true;
+            }
+        } else {
+            result.push(c);
+            last_was_hyphen = false;
+        }
+    }
+
+    // Trim hyphens from start and end
+    let result = result.trim_matches('-');
+
+    // Limit length (leaving room for extension)
+    let max_name_len = 75 - original_ext.len();
+    let result = if result.len() > max_name_len {
+        &result[..max_name_len].trim_end_matches('-')
+    } else {
+        result
+    };
+
+    // Add extension back
+    if original_ext.is_empty() {
+        result.to_string()
+    } else {
+        format!("{}.{}", result, original_ext.to_lowercase())
+    }
+}
+
+/// Sanitize a folder path
+pub fn sanitize_folder_path(path: &str) -> String {
+    path.split('/')
+        .map(|segment| {
+            segment
+                .chars()
+                .map(|c| match c {
+                    ' ' | '_' => '-',
+                    c if c.is_alphanumeric() || c == '-' || c == '.' => c,
+                    _ => '-',
+                })
+                .collect::<String>()
+                .trim_matches('-')
+                .to_string()
+        })
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// Complete organization plan from orchestrator
@@ -265,4 +347,57 @@ pub enum AnalysisPhase {
     Planning,
     Complete,
     Failed,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_filename_spaces() {
+        let result = sanitize_filename("Acme Corp Invoice 2024", "document.pdf");
+        assert_eq!(result, "Acme-Corp-Invoice-2024.pdf");
+    }
+
+    #[test]
+    fn test_sanitize_filename_preserves_extension() {
+        let result = sanitize_filename("Report Final", "spreadsheet.xlsx");
+        assert_eq!(result, "Report-Final.xlsx");
+    }
+
+    #[test]
+    fn test_sanitize_filename_removes_special_chars() {
+        let result = sanitize_filename("Invoice #123: Test?", "doc.pdf");
+        assert_eq!(result, "Invoice-123-Test.pdf");
+    }
+
+    #[test]
+    fn test_sanitize_filename_handles_underscores() {
+        let result = sanitize_filename("acme_corp_invoice_2024", "file.pdf");
+        assert_eq!(result, "acme-corp-invoice-2024.pdf");
+    }
+
+    #[test]
+    fn test_sanitize_filename_removes_consecutive_hyphens() {
+        let result = sanitize_filename("Test---Multiple---Hyphens", "file.pdf");
+        assert_eq!(result, "Test-Multiple-Hyphens.pdf");
+    }
+
+    #[test]
+    fn test_sanitize_filename_handles_extension_in_name() {
+        let result = sanitize_filename("Report-2024.pdf", "original.pdf");
+        assert_eq!(result, "Report-2024.pdf");
+    }
+
+    #[test]
+    fn test_sanitize_folder_path() {
+        let result = sanitize_folder_path("Clients/Acme Corp/2024 Q1/Invoices");
+        assert_eq!(result, "Clients/Acme-Corp/2024-Q1/Invoices");
+    }
+
+    #[test]
+    fn test_sanitize_folder_path_removes_empty() {
+        let result = sanitize_folder_path("Clients//Empty//Test");
+        assert_eq!(result, "Clients/Empty/Test");
+    }
 }

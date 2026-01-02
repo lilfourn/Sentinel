@@ -25,6 +25,7 @@ import { InstructionInput } from './InstructionInput';
 import { DynamicStatus } from './DynamicStatus';
 import { SimulationControls } from './SimulationControls';
 import { ExecutionProgress } from './ExecutionProgress';
+import { AnalysisProgressBar } from './AnalysisProgressBar';
 import { PlanPreview } from './PlanPreview';
 import './ChangesPanel.css';
 
@@ -53,6 +54,7 @@ export function ChangesPanel() {
     executionProgress,
     acceptPlanParallel,
     rejectPlan,
+    analysisProgress,
   } = useOrganizeStore();
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -123,6 +125,17 @@ export function ChangesPanel() {
               isLatest={index === thoughts.length - 1 && isWorking && !awaitingInstruction && !awaitingConventionSelection}
             />
           ))}
+
+          {/* Analysis Progress Bar - shown during AI analysis phase */}
+          {isAnalyzing && analysisProgress && (
+            <AnalysisProgressBar
+              current={analysisProgress.current}
+              total={analysisProgress.total}
+              phase={analysisProgress.phase}
+              message={analysisProgress.message}
+              className="mt-2"
+            />
+          )}
 
           {/* Content Analysis Dialog - shown before instruction input */}
           {showContentAnalysis && targetFolder && (

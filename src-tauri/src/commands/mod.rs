@@ -1,4 +1,5 @@
 pub mod ai;
+pub mod billing;
 pub mod chat;
 pub mod filesystem;
 pub mod grok;
@@ -12,6 +13,7 @@ pub mod wal;
 pub mod watcher;
 
 pub use ai::*;
+pub use billing::*;
 pub use chat::*;
 pub use filesystem::*;
 pub use grok::*;

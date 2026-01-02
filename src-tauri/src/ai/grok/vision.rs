@@ -9,10 +9,6 @@ use std::path::Path;
 /// Maximum image dimension (width or height)
 const MAX_DIMENSION: u32 = 1600;
 
-/// Target JPEG quality for compression
-#[allow(dead_code)]
-const JPEG_QUALITY: u8 = 85;
-
 /// Prepare an image for Grok Vision API
 ///
 /// - Resizes if too large

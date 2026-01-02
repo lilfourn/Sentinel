@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
@@ -9,10 +10,13 @@ import {
   EyeOff,
   Settings,
   Bot,
+  Crown,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useNavigationStore } from '../../stores/navigation-store';
+import { useSubscriptionStore } from '../../stores/subscription-store';
 import { UserMenu } from '../auth/UserMenu';
+import { UpgradeDialog } from '../dialogs/UpgradeDialog';
 import type { ViewMode } from '../../types/file';
 
 interface ToolbarProps {
@@ -32,6 +36,10 @@ export function Toolbar({ onOpenSettings, onToggleChat }: ToolbarProps) {
     setViewMode,
     toggleShowHidden,
   } = useNavigationStore();
+
+  const { tier, isLoading: isSubscriptionLoading } = useSubscriptionStore();
+  const isPro = tier === 'pro';
+  const [showUpgradeDialog, setShowUpgradeDialog] = useState(false);
 
   const canGoBack = historyIndex > 0;
   const canGoForward = historyIndex < history.length - 1;
@@ -137,8 +145,48 @@ export function Toolbar({ onOpenSettings, onToggleChat }: ToolbarProps) {
         <Bot size={16} />
       </button>
 
+      {/* Plan badge */}
+      <div className="flex items-center gap-1">
+        {isSubscriptionLoading ? (
+          // Show loading state while fetching subscription
+          <span className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-slate-200 dark:bg-neutral-700 text-slate-400 dark:text-neutral-500 animate-pulse">
+            ...
+          </span>
+        ) : (
+          <>
+            <span
+              className={cn(
+                'flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium',
+                isPro
+                  ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white'
+                  : 'bg-slate-200 dark:bg-neutral-700 text-slate-600 dark:text-neutral-300'
+              )}
+            >
+              {isPro && <Crown size={12} />}
+              {isPro ? 'Pro' : 'Free'}
+            </span>
+
+            {!isPro && (
+              <button
+                onClick={() => setShowUpgradeDialog(true)}
+                className="px-2 py-1 rounded-md text-xs font-medium bg-orange-500 hover:bg-orange-600 text-white transition-colors"
+                title="Upgrade to Pro"
+              >
+                Upgrade
+              </button>
+            )}
+          </>
+        )}
+      </div>
+
       {/* User menu (shows when signed in) */}
       <UserMenu />
+
+      {/* Upgrade dialog */}
+      <UpgradeDialog
+        isOpen={showUpgradeDialog}
+        onClose={() => setShowUpgradeDialog(false)}
+      />
     </header>
   );
 }

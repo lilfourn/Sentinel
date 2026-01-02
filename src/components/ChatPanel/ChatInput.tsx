@@ -1,14 +1,17 @@
 import { useState, useRef, useEffect, KeyboardEvent, useCallback } from 'react';
-import { ArrowUp, StopCircle, Plus, ChevronDown, Brain, X } from 'lucide-react';
+import { ArrowUp, StopCircle, Plus, ChevronDown, Brain, X, Lock } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useChatStore, type ChatModel, type MentionItem, getContextStrategy } from '../../stores/chat-store';
 import { useNavigationStore } from '../../stores/navigation-store';
+import { useSubscriptionStore, type ModelType, chatModelToSubscriptionModel } from '../../stores/subscription-store';
 import { InlineMentionDropdown } from './InlineMentionDropdown';
+import { UsageMeter } from '../subscription/UsageMeter';
+import { UpgradeBadge } from '../subscription/UpgradePrompt';
 
-const MODEL_OPTIONS: { value: ChatModel; label: string }[] = [
-  { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
-  { value: 'claude-haiku-4-5', label: 'Haiku 4.5' },
-  { value: 'claude-opus-4-5', label: 'Opus 4.5' },
+const MODEL_OPTIONS: { value: ChatModel; label: string; modelType: ModelType }[] = [
+  { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5', modelType: 'sonnet' },
+  { value: 'claude-haiku-4-5', label: 'Haiku 4.5', modelType: 'haiku' },
+  { value: 'claude-opus-4-5', label: 'Opus 4.5', modelType: 'opus' },
 ];
 
 // Debounce search delay
@@ -70,6 +73,11 @@ export function ChatInput() {
   } = useChatStore();
 
   const isProcessing = status === 'thinking' || status === 'streaming';
+
+  // Subscription state
+  const { tier, canUseModel, canUseExtendedThinking, openCheckout } = useSubscriptionStore();
+  const currentModelType = chatModelToSubscriptionModel(model);
+  const [showModelDropdown, setShowModelDropdown] = useState(false);
 
   // Cleanup debounce timeout on unmount
   useEffect(() => {
@@ -268,7 +276,7 @@ export function ChatInput() {
   return (
     <div className="p-3">
       {/* Unified prompt container */}
-      <div ref={containerRef} className="rounded-xl bg-[#2a2a2a] border border-white/10 overflow-hidden relative">
+      <div ref={containerRef} className="rounded-xl bg-[#2a2a2a] border border-white/10 relative">
         {/* Inline mention dropdown */}
         <InlineMentionDropdown anchorRef={containerRef} onSelect={handleMentionSelect} />
 
@@ -329,39 +337,117 @@ export function ChatInput() {
 
             {/* Extended thinking toggle */}
             <button
-              onClick={() => setExtendedThinking(!extendedThinking)}
-              className={`p-2 rounded-lg transition-colors ${
-                extendedThinking
+              onClick={() => {
+                if (canUseExtendedThinking()) {
+                  setExtendedThinking(!extendedThinking);
+                } else {
+                  openCheckout();
+                }
+              }}
+              className={`p-2 rounded-lg transition-colors relative ${
+                extendedThinking && canUseExtendedThinking()
                   ? 'bg-purple-500/20 text-purple-400 hover:bg-purple-500/30'
-                  : 'hover:bg-white/10 text-gray-400 hover:text-gray-200'
+                  : canUseExtendedThinking()
+                    ? 'hover:bg-white/10 text-gray-400 hover:text-gray-200'
+                    : 'hover:bg-white/10 text-gray-500'
               }`}
-              title={extendedThinking ? 'Extended thinking enabled' : 'Extended thinking disabled'}
-              aria-label={extendedThinking ? 'Disable extended thinking' : 'Enable extended thinking'}
+              title={
+                !canUseExtendedThinking()
+                  ? 'Extended thinking requires Pro'
+                  : extendedThinking
+                    ? 'Extended thinking enabled'
+                    : 'Extended thinking disabled'
+              }
+              aria-label={
+                !canUseExtendedThinking()
+                  ? 'Upgrade to Pro for extended thinking'
+                  : extendedThinking
+                    ? 'Disable extended thinking'
+                    : 'Enable extended thinking'
+              }
               aria-pressed={extendedThinking}
               disabled={isProcessing}
             >
               <Brain size={18} aria-hidden="true" />
+              {!canUseExtendedThinking() && (
+                <Lock size={8} className="absolute -top-0.5 -right-0.5 text-orange-400" />
+              )}
             </button>
           </div>
 
-          {/* Right side - Model selector + Send */}
+          {/* Right side - Usage + Model selector + Send */}
           <div className="flex items-center gap-2">
-            {/* Model selector */}
+            {/* Usage meter for current model */}
+            <UsageMeter model={currentModelType} variant="compact" />
+
+            {/* Custom model selector with tier gating */}
             <div className="relative">
-              <select
-                value={model}
-                onChange={(e) => setModel(e.target.value as ChatModel)}
-                className="appearance-none text-xs text-gray-400 bg-transparent pr-5 pl-2 py-1 focus:outline-none cursor-pointer hover:text-gray-200 transition-colors"
+              <button
+                onClick={() => !isProcessing && setShowModelDropdown(!showModelDropdown)}
+                className="flex items-center gap-1 text-xs text-gray-400 bg-transparent px-2 py-1 rounded hover:bg-white/5 hover:text-gray-200 transition-colors"
                 disabled={isProcessing}
                 aria-label="Select AI model"
+                aria-haspopup="listbox"
+                aria-expanded={showModelDropdown}
               >
-                {MODEL_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value} className="bg-[#2a2a2a] text-gray-200">
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown size={12} className="absolute right-0 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" aria-hidden="true" />
+                {MODEL_OPTIONS.find((opt) => opt.value === model)?.label}
+                {!canUseModel(currentModelType) && <Lock size={10} className="text-orange-400" />}
+                <ChevronDown size={12} className="text-gray-500" aria-hidden="true" />
+              </button>
+
+              {/* Dropdown menu */}
+              {showModelDropdown && (
+                <>
+                  {/* Backdrop to close dropdown */}
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setShowModelDropdown(false)}
+                  />
+                  <div className="absolute right-0 bottom-full mb-1 w-48 bg-[#2a2a2a] border border-white/10 rounded-lg shadow-xl z-50 overflow-hidden">
+                    {MODEL_OPTIONS.map((opt) => {
+                      const isAvailable = canUseModel(opt.modelType);
+                      return (
+                        <button
+                          key={opt.value}
+                          onClick={() => {
+                            if (isAvailable) {
+                              setModel(opt.value);
+                              setShowModelDropdown(false);
+                            } else {
+                              openCheckout();
+                            }
+                          }}
+                          className={`w-full flex items-center justify-between px-3 py-2 text-xs transition-colors ${
+                            model === opt.value
+                              ? 'bg-white/10 text-gray-100'
+                              : isAvailable
+                                ? 'text-gray-300 hover:bg-white/5'
+                                : 'text-gray-500'
+                          }`}
+                        >
+                          <span className="flex items-center gap-2">
+                            {opt.label}
+                            {!isAvailable && (
+                              <span className="text-[10px] text-orange-400 flex items-center gap-0.5">
+                                <Lock size={10} />
+                                PRO
+                              </span>
+                            )}
+                          </span>
+                          {isAvailable && (
+                            <UsageMeter model={opt.modelType} variant="compact" />
+                          )}
+                        </button>
+                      );
+                    })}
+                    {tier === 'free' && (
+                      <div className="px-3 py-2 border-t border-white/10">
+                        <UpgradeBadge />
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
 
             {/* Send/Stop button */}

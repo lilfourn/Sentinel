@@ -279,8 +279,33 @@ Respond with ONLY this JSON format:
   "content_summary": "4-5 detailed sentences covering: WHO (specific company/person names), WHAT (specific document purpose, project, or transaction), WHEN (dates), and HOW MUCH (amounts). Include ALL specific identifiers found.",
   "document_type": "one of: invoice, contract, report, letter, form, receipt, statement, proposal, presentation, spreadsheet, manual, certificate, resume, photo, unknown",
   "key_entities": ["Acme-Corp", "John-Smith", "Project-Phoenix", "2024-01-15", "$15432"],
-  "suggested_name": "Acme-Corp-Invoice-2024-01-Project-Phoenix"
+  "suggested_name": "Follow naming rules below"
 }}
+
+## FILE NAMING RULES (for suggested_name):
+
+FORMAT: [Entity]-[Description]-[Date]-[Type]
+- Use HYPHENS (-) instead of spaces, NEVER use spaces or underscores
+- Include date as YYYY-MM or YYYY-MM-DD when document has important date
+- Start with the primary entity (company, person, property)
+- End with document type abbreviation
+- Keep it descriptive but concise (max 60 chars before extension)
+- NO file extension in suggested_name
+
+GOOD EXAMPLES:
+✅ "Acme-Corp-Invoice-2024-03-15-5432"
+✅ "Smith-John-Employment-Contract-2024-01"
+✅ "123-Main-St-Lease-Agreement-2024"
+✅ "Q1-2024-Financial-Report"
+✅ "Project-Phoenix-Proposal-Draft"
+✅ "TechStart-Inc-NDA-Signed-2024-02"
+✅ "ABC-Properties-Rent-Roll-2024-Q1"
+
+BAD EXAMPLES:
+❌ "scan001" (meaningless)
+❌ "Document 1" (spaces, generic)
+❌ "invoice" (no context)
+❌ "report_final" (underscores, generic)
 
 The key_entities array is CRITICAL for folder organization. Include every specific name, date, and amount you find!"#,
             filename, content
@@ -406,24 +431,6 @@ The key_entities array is CRITICAL for folder organization. Include every specif
 
         Ok((analysis, estimated_tokens))
     }
-
-    /// Format analyses as summary strings for orchestrator
-    #[allow(dead_code)]
-    pub fn format_summaries(analyses: &[DocumentAnalysis]) -> String {
-        analyses
-            .iter()
-            .map(|a| {
-                format!(
-                    "{} | {} | {} | {}",
-                    a.file_name,
-                    a.content_summary.chars().take(100).collect::<String>(),
-                    a.document_type.as_str(),
-                    a.suggested_name.as_deref().unwrap_or(&a.file_name)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
 }
 
 /// Run multiple explore agents in parallel
@@ -451,7 +458,7 @@ where
                 agent.process_batch(batch.files, callback).await
             }
         })
-        .buffer_unordered(4) // Max 4 concurrent agents
+        .buffer_unordered(12) // Max 12 concurrent agents for faster processing
         .collect()
         .await;
 

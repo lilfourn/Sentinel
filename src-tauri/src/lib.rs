@@ -1,4 +1,5 @@
 mod ai;
+mod billing;
 mod commands;
 mod execution;
 mod file_coordination;
@@ -13,8 +14,9 @@ mod vector;
 pub mod vfs;
 mod wal;
 
+use billing::BillingState;
 use commands::*;
-use commands::grok::GrokState;
+use commands::grok::{GrokState, GrokAbortFlag};
 use services::watcher::create_watcher_handle;
 use tracing_subscriber::EnvFilter;
 
@@ -45,12 +47,15 @@ pub fn run() {
         .expect("Failed to create quarantine manager");
     let chat_abort_flag = ChatAbortFlag::default();
     let grok_state = GrokState::default();
+    let grok_abort_flag = GrokAbortFlag::default();
+    let billing_state = BillingState::default();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_macos_permissions::init())
+        .plugin(tauri_plugin_deep_link::init())
         .manage(watcher_handle)
         .manage(vector_state)
         .manage(tree_state)
@@ -58,6 +63,8 @@ pub fn run() {
         .manage(quarantine_state)
         .manage(chat_abort_flag)
         .manage(grok_state)
+        .manage(grok_abort_flag)
+        .manage(billing_state)
         .invoke_handler(tauri::generate_handler![
             // Filesystem commands
             read_directory,
@@ -172,12 +179,27 @@ pub fn run() {
             grok_init,
             grok_scan_folder,
             grok_organize,
+            grok_generate_plan,
+            grok_execute_plan,
             grok_analyze_file,
             grok_cache_stats,
             grok_clear_cache,
             grok_check_api_key,
             grok_set_api_key,
             grok_get_api_key,
+            grok_abort_plan,
+            grok_reset_abort,
+            // Billing commands
+            get_daily_usage,
+            get_usage_history,
+            check_request_limit,
+            update_subscription_cache,
+            get_subscription,
+            get_subscription_info,
+            clear_subscription_cache,
+            record_usage,
+            can_use_model,
+            can_use_extended_thinking,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

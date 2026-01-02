@@ -60,21 +60,40 @@ pub fn delete_api_key(provider: String) -> Result<(), String> {
 }
 
 /// Check which providers are configured
+/// Checks both credential manager and environment variables
 #[tauri::command]
 pub fn get_configured_providers() -> Vec<ProviderStatus> {
-    let has_key = CredentialManager::has_api_key("anthropic");
-    eprintln!("[DEBUG] Checking if anthropic API key is configured: {}", has_key);
+    // Anthropic: credential manager only (user must configure in settings)
+    let has_anthropic = CredentialManager::has_api_key("anthropic");
 
-    // Try to get the key to see any error details
-    match CredentialManager::get_api_key("anthropic") {
-        Ok(_) => eprintln!("[DEBUG] Successfully retrieved anthropic API key from keychain"),
-        Err(e) => eprintln!("[DEBUG] Failed to get anthropic API key: {}", e),
-    }
+    // xAI/Grok: check env vars first, then credential manager
+    let has_xai = std::env::var("XAI_API_KEY").is_ok()
+        || std::env::var("GROK_API_KEY").is_ok()
+        || std::env::var("VITE_XAI_API_KEY").is_ok()
+        || CredentialManager::has_api_key("xai");
 
-    vec![ProviderStatus {
-        provider: "anthropic".to_string(),
-        configured: has_key,
-    }]
+    // OpenAI: check env vars first, then credential manager
+    let has_openai = std::env::var("OPENAI_API_KEY").is_ok()
+        || std::env::var("VITE_OPENAI_API_KEY").is_ok()
+        || CredentialManager::has_api_key("openai");
+
+    eprintln!("[DEBUG] Provider status - anthropic: {}, xai: {}, openai: {}",
+        has_anthropic, has_xai, has_openai);
+
+    vec![
+        ProviderStatus {
+            provider: "anthropic".to_string(),
+            configured: has_anthropic,
+        },
+        ProviderStatus {
+            provider: "xai".to_string(),
+            configured: has_xai,
+        },
+        ProviderStatus {
+            provider: "openai".to_string(),
+            configured: has_openai,
+        },
+    ]
 }
 
 /// Get rename suggestion for a file

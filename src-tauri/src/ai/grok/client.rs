@@ -6,6 +6,7 @@
 //! - Token usage tracking
 
 use super::types::*;
+use super::utils::extract_json_object;
 use base64::Engine;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -72,11 +73,35 @@ Provide a JSON response:
   "content_summary": "3-4 detailed sentences about: WHO is involved (specific company names like 'Acme Corporation', person names like 'John Smith'), WHAT the document is (specific project like 'Q1 Marketing Campaign', transaction like 'Invoice #12345'), WHEN (specific dates), and any AMOUNTS or numbers mentioned",
   "document_type": "one of: invoice, contract, report, letter, form, receipt, statement, proposal, presentation, spreadsheet, manual, certificate, license, permit, application, resume, photo, diagram, drawing, unknown",
   "key_entities": ["MUST include: specific company names (e.g., 'Acme Corp'), person names (e.g., 'Jane Doe'), project names, dates (e.g., '2024-01-15'), dollar amounts (e.g., '$5,432.00'), reference numbers"],
-  "suggested_name": "Specific-Company-Or-Project-Name-Date-Type",
+  "suggested_name": "See naming rules below",
   "confidence": 0.85
 }}
 
-FOCUS ON: Company/client names, project names, people names, specific dates, dollar amounts. These drive folder organization!"#,
+## FILE NAMING RULES (for suggested_name):
+
+FORMAT: [Entity]-[Description]-[Date]-[Type]
+- Use HYPHENS (-) instead of spaces, NEVER use spaces
+- Include date as YYYY-MM or YYYY-MM-DD when document has important date
+- Start with the primary entity (company, person, property)
+- End with document type
+- Keep it descriptive but concise (max 60 chars before extension)
+
+GOOD EXAMPLES:
+✅ "Acme-Corp-Invoice-2024-03-15-5432"
+✅ "Smith-John-Employment-Contract-2024-01"
+✅ "123-Main-St-Lease-Agreement-2024"
+✅ "Q1-2024-Financial-Report"
+✅ "Project-Phoenix-Proposal-Draft"
+✅ "TechStart-NDA-Signed-2024-02"
+
+BAD EXAMPLES:
+❌ "scan001" (meaningless)
+❌ "Document 1" (spaces, generic)
+❌ "invoice.pdf" (no context)
+❌ "New Document" (generic)
+❌ "IMG_2024" (camera default)
+
+FOCUS ON: Company/client names, project names, people names, specific dates, dollar amounts!"#,
             filename,
             if context_text.is_empty() { String::new() } else { format!("Context: {}", context_text) }
         );
@@ -110,100 +135,6 @@ FOCUS ON: Company/client names, project names, people names, specific dates, dol
             .message.content.as_str();
 
         self.parse_analysis_response(content, filename)
-    }
-
-    /// Analyze multiple documents with a single request (batch mode)
-    /// Uses Grok's 2M context window efficiently
-    #[allow(dead_code)]
-    pub async fn analyze_batch(
-        &self,
-        items: Vec<(String, Vec<u8>)>, // (filename, image_data)
-    ) -> Result<Vec<DocumentAnalysis>, String> {
-        if items.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // For small batches, use parallel individual requests
-        if items.len() <= 3 {
-            let mut results = Vec::new();
-            for (filename, image_data) in items {
-                match self.analyze_document_image(&image_data, &filename, None).await {
-                    Ok(analysis) => results.push(analysis),
-                    Err(e) => {
-                        tracing::warn!("Failed to analyze {}: {}", filename, e);
-                    }
-                }
-            }
-            return Ok(results);
-        }
-
-        // For larger batches, use multi-image request
-        self.rate_limiter.acquire().await;
-
-        let mut content_parts = vec![ContentPart::Text {
-            text: format!(
-                r#"Analyze these {} document images for file organization.
-
-For EACH image, provide a JSON object on a single line with these fields:
-{{"file_index": N, "content_summary": "...", "document_type": "...", "key_entities": [...], "suggested_name": "...", "confidence": 0.85}}
-
-Respond with one JSON object per line, in order of the images.
-Valid document_type values: invoice, contract, report, letter, form, receipt, statement, proposal, presentation, spreadsheet, manual, certificate, license, permit, application, resume, photo, diagram, drawing, unknown"#,
-                items.len()
-            ),
-        }];
-
-        // Add all images
-        for (filename, image_data) in &items {
-            let base64_image = base64::engine::general_purpose::STANDARD.encode(image_data);
-            let mime_type = detect_image_mime(image_data);
-
-            content_parts.push(ContentPart::Text {
-                text: format!("\n--- File: {} ---", filename),
-            });
-            content_parts.push(ContentPart::ImageUrl {
-                image_url: ImageUrlContent {
-                    url: format!("data:{};base64,{}", mime_type, base64_image),
-                    detail: "low".to_string(),
-                },
-            });
-        }
-
-        let request = GrokChatRequest {
-            model: self.config.model.clone(),
-            messages: vec![GrokMessage {
-                role: "user".to_string(),
-                content: content_parts,
-            }],
-            max_tokens: items.len() as u32 * 200, // ~200 tokens per analysis
-            temperature: 0.1,
-        };
-
-        let response = self.send_request(&request).await?;
-        self.tokens_used.fetch_add(response.usage.total_tokens, Ordering::Relaxed);
-
-        let content = response.choices.first()
-            .ok_or("No response from Grok")?
-            .message.content.as_str();
-
-        // Parse multi-line response
-        let mut results = Vec::new();
-        for (i, line) in content.lines().enumerate() {
-            let line = line.trim();
-            if line.is_empty() || !line.starts_with('{') {
-                continue;
-            }
-
-            let filename = items.get(i).map(|(f, _)| f.as_str()).unwrap_or("unknown");
-            match self.parse_analysis_response(line, filename) {
-                Ok(analysis) => results.push(analysis),
-                Err(e) => {
-                    tracing::warn!("Failed to parse analysis for {}: {}", filename, e);
-                }
-            }
-        }
-
-        Ok(results)
     }
 
     /// Send request with retry logic
@@ -254,7 +185,7 @@ Valid document_type values: invoice, contract, report, letter, form, receipt, st
     /// Parse analysis response from Grok
     fn parse_analysis_response(&self, content: &str, filename: &str) -> Result<DocumentAnalysis, String> {
         // Try to extract JSON from response
-        let json_str = extract_json(content)?;
+        let json_str = extract_json_object(content)?;
 
         #[derive(Deserialize)]
         struct RawAnalysis {
@@ -282,22 +213,6 @@ Valid document_type values: invoice, contract, report, letter, form, receipt, st
             confidence: raw.confidence,
             method: AnalysisMethod::GrokVision,
         })
-    }
-
-    /// Get total tokens used
-    #[allow(dead_code)]
-    pub fn tokens_used(&self) -> u32 {
-        self.tokens_used.load(Ordering::Relaxed)
-    }
-
-    /// Estimate cost in cents
-    #[allow(dead_code)]
-    pub fn estimated_cost_cents(&self) -> u32 {
-        let tokens = self.tokens_used() as f64;
-        // $0.20/M input, $0.50/M output - estimate 80% input, 20% output
-        let input_cost = tokens * 0.8 * 0.00002; // $0.20/M = $0.0000002/token
-        let output_cost = tokens * 0.2 * 0.00005; // $0.50/M = $0.0000005/token
-        ((input_cost + output_cost) * 100.0) as u32
     }
 }
 
@@ -401,38 +316,6 @@ fn detect_image_mime(data: &[u8]) -> &'static str {
     }
 }
 
-/// Extract JSON from a response that might contain markdown or other text
-fn extract_json(text: &str) -> Result<String, String> {
-    // Try to find JSON in code blocks
-    if let Some(start) = text.find("```json") {
-        let json_start = start + 7;
-        if let Some(end) = text[json_start..].find("```") {
-            return Ok(text[json_start..json_start + end].trim().to_string());
-        }
-    }
-
-    // Try plain code blocks
-    if let Some(start) = text.find("```") {
-        let block_start = start + 3;
-        let content_start = text[block_start..]
-            .find('\n')
-            .map(|i| block_start + i + 1)
-            .unwrap_or(block_start);
-        if let Some(end) = text[content_start..].find("```") {
-            return Ok(text[content_start..content_start + end].trim().to_string());
-        }
-    }
-
-    // Try to find raw JSON object
-    if let Some(start) = text.find('{') {
-        if let Some(end) = text.rfind('}') {
-            return Ok(text[start..=end].to_string());
-        }
-    }
-
-    Err("No JSON found in response".to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,7 +333,7 @@ mod tests {
 {"content_summary": "test", "document_type": "invoice"}
 ```
 That's it."#;
-        let json = extract_json(text).unwrap();
+        let json = extract_json_object(text).unwrap();
         assert!(json.contains("content_summary"));
     }
 

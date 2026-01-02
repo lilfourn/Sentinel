@@ -15,6 +15,7 @@
 
 use super::client::GrokClient;
 use super::types::*;
+use super::utils::extract_json_object;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -266,6 +267,39 @@ Create as many folders as needed. Aim for:
 - **Deep nesting** (4-6 levels) for complex hierarchies
 - **One folder per unique entity** found in the data
 
+## MANDATORY FILE RENAMING RULES
+
+EVERY file MUST be renamed using this format:
+**[Entity]-[Description]-[Date]-[Type].[ext]**
+
+### Rules:
+1. **Use HYPHENS (-)** instead of spaces - NEVER use spaces or underscores
+2. **Include DATE** when the document has an important date (YYYY-MM-DD or YYYY-MM)
+3. **Start with primary entity** (company name, person name, property address)
+4. **End with document type** (Invoice, Contract, Report, Statement, etc.)
+5. **Include identifying numbers** when present (invoice #, amount, reference)
+6. **Keep original extension** (.pdf, .xlsx, .docx, etc.)
+7. **Max 60 characters** before extension
+
+### Naming Examples:
+| Original | Renamed |
+|----------|---------|
+| scan001.pdf | Acme-Corp-Invoice-2024-03-15-5432.pdf |
+| document.pdf | Smith-John-Employment-Contract-2024-01.pdf |
+| IMG_4521.jpg | 123-Main-St-Property-Photo-Exterior.jpg |
+| report.xlsx | Q1-2024-Financial-Summary-TechStart.xlsx |
+| email attachment.pdf | ABC-Properties-Lease-Agreement-Unit-4B.pdf |
+| Copy of invoice (1).pdf | Global-Inc-Invoice-2024-02-28-1250.pdf |
+| SCAN0042.PDF | Martinez-Family-Trust-Document-2023.pdf |
+
+### FORBIDDEN filename patterns:
+❌ Spaces: "Acme Corp Invoice.pdf"
+❌ Generic: "document.pdf", "scan.pdf", "file.pdf"
+❌ Camera defaults: "IMG_xxxx", "DSC_xxxx", "SCAN00xx"
+❌ Copy indicators: "Copy of", "(1)", "- Copy"
+❌ Underscores: "acme_corp_invoice.pdf"
+❌ No context: "invoice.pdf", "contract.pdf"
+
 Return ONLY this JSON structure:
 {{
   "detected_domain": "Specific description like 'Real estate property management for Smith Properties LLC' or 'Software consulting business with clients Acme, TechStart, and GlobalCorp'",
@@ -299,7 +333,7 @@ Return ONLY this JSON structure:
       "file_path": "original/path/to/file.pdf",
       "original_name": "scan001.pdf",
       "destination_folder": "Clients/Acme-Corporation/2024/Invoices",
-      "new_name": "Acme-Corp-Invoice-2024-03-15-$5432.pdf",
+      "new_name": "Acme-Corp-Invoice-2024-03-15-5432.pdf",
       "confidence": 0.9
     }}
   ],
@@ -309,8 +343,9 @@ Return ONLY this JSON structure:
 ## Constraints
 - Create up to {} folders - USE THEM ALL if entities warrant it
 - Nest up to {} levels deep - deeper is better for clarity
-- EVERY file must be assigned - no "unassigned" unless truly unidentifiable
-- Generic folder names will be REJECTED - be specific or fail
+- EVERY file MUST be assigned AND renamed - no "unassigned" unless truly unidentifiable
+- EVERY new_name MUST follow the naming rules above - NO spaces, NO generic names
+- Generic folder or file names will be REJECTED
 
 Output ONLY valid JSON. No markdown, no explanation, no code blocks."#,
             self.config.user_instruction,
@@ -385,7 +420,7 @@ Output ONLY valid JSON. No markdown, no explanation, no code blocks."#,
     /// Parse the plan response from Grok
     fn parse_plan_response(&self, response: &str) -> Result<OrganizationPlan, String> {
         // Extract JSON from response
-        let json_str = extract_json(response)?;
+        let json_str = extract_json_object(response)?;
 
         // Parse into our structure
         #[derive(Deserialize)]
@@ -468,65 +503,6 @@ Output ONLY valid JSON. No markdown, no explanation, no code blocks."#,
     }
 }
 
-/// Extract JSON from response text
-fn extract_json(text: &str) -> Result<String, String> {
-    // Try to find JSON in code blocks
-    if let Some(start) = text.find("```json") {
-        let json_start = start + 7;
-        if let Some(end) = text[json_start..].find("```") {
-            return Ok(text[json_start..json_start + end].trim().to_string());
-        }
-    }
-
-    // Try plain code blocks
-    if let Some(start) = text.find("```") {
-        let block_start = start + 3;
-        let content_start = text[block_start..]
-            .find('\n')
-            .map(|i| block_start + i + 1)
-            .unwrap_or(block_start);
-        if let Some(end) = text[content_start..].find("```") {
-            return Ok(text[content_start..content_start + end].trim().to_string());
-        }
-    }
-
-    // Try to find raw JSON object
-    if let Some(start) = text.find('{') {
-        if let Some(end) = text.rfind('}') {
-            return Ok(text[start..=end].to_string());
-        }
-    }
-
-    Err("No JSON found in response".to_string())
-}
-
-/// Quick organization for small file sets (< 50 files)
-/// Skips the explore phase and sends everything to orchestrator directly
-#[allow(dead_code)]
-pub async fn quick_organize(
-    client: Arc<GrokClient>,
-    analyses: Vec<DocumentAnalysis>,
-    user_instruction: &str,
-) -> Result<OrganizationPlan, String> {
-    let config = OrchestratorConfig {
-        user_instruction: user_instruction.to_string(),
-        ..Default::default()
-    };
-
-    let orchestrator = OrchestratorAgent::new(client, config);
-
-    // Create a fake ExploreResult to pass to create_plan
-    let result = ExploreResult {
-        batch_id: 0,
-        analyses,
-        failed_files: vec![],
-        total_tokens_used: 0,
-        duration_ms: 0,
-    };
-
-    orchestrator.create_plan(vec![result]).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,14 +514,14 @@ mod tests {
 {"strategy_name": "Test", "description": "Test plan", "folder_structure": [], "assignments": []}
 ```
 "#;
-        let json = extract_json(text).unwrap();
+        let json = extract_json_object(text).unwrap();
         assert!(json.contains("strategy_name"));
     }
 
     #[test]
     fn test_extract_raw_json() {
         let text = r#"{"strategy_name": "Test"}"#;
-        let json = extract_json(text).unwrap();
+        let json = extract_json_object(text).unwrap();
         assert!(json.contains("strategy_name"));
     }
 }

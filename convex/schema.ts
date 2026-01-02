@@ -90,4 +90,61 @@ export default defineSchema({
   })
     .index("by_user", ["userId"])
     .index("by_user_month", ["userId", "month"]),
+
+  // Subscription management - links Clerk user to Stripe billing
+  subscriptions: defineTable({
+    userId: v.id("users"),
+    // Stripe identifiers
+    stripeCustomerId: v.string(),
+    stripeSubscriptionId: v.optional(v.string()), // null for free tier
+    // Subscription state
+    tier: v.union(v.literal("free"), v.literal("pro")),
+    status: v.union(
+      v.literal("active"),
+      v.literal("past_due"),
+      v.literal("canceled"),
+      v.literal("incomplete"),
+      v.literal("trialing")
+    ),
+    // Billing period
+    currentPeriodStart: v.optional(v.number()), // Unix timestamp (ms)
+    currentPeriodEnd: v.optional(v.number()), // Unix timestamp (ms)
+    cancelAtPeriodEnd: v.boolean(),
+    // Timestamps
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_stripe_customer", ["stripeCustomerId"])
+    .index("by_stripe_subscription", ["stripeSubscriptionId"]),
+
+  // Daily usage tracking per model - resets at midnight UTC
+  dailyUsage: defineTable({
+    userId: v.id("users"),
+    date: v.string(), // "2025-01-15" format (UTC)
+    // Per-model request counts
+    haikuRequests: v.number(),
+    sonnetRequests: v.number(),
+    opusRequests: v.number(),
+    extendedThinkingRequests: v.number(),
+    // Feature usage counts
+    organizeRequests: v.number(),
+    renameRequests: v.number(),
+    // Last updated timestamp
+    updatedAt: v.number(),
+  })
+    .index("by_user_date", ["userId", "date"])
+    .index("by_date", ["date"]), // For cleanup jobs
+
+  // Stripe webhook event log - for idempotency and debugging
+  stripeWebhookEvents: defineTable({
+    eventId: v.string(), // Stripe event ID
+    eventType: v.string(),
+    processedAt: v.number(),
+    payload: v.optional(v.string()), // JSON string of relevant data
+    status: v.union(v.literal("processed"), v.literal("failed")),
+    errorMessage: v.optional(v.string()),
+  })
+    .index("by_event_id", ["eventId"])
+    .index("by_processed_at", ["processedAt"]), // For cleanup
 });

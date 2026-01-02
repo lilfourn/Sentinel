@@ -1,10 +1,14 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { X, Eye, EyeOff, Check, Loader2, FolderOpen } from 'lucide-react';
+import { X, Check, FolderOpen, CreditCard, Sparkles } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useWatcher } from '../../hooks/useAutoRename';
 import { useSyncedSettings } from '../../hooks/useSyncedSettings';
-import { showSuccess, showError } from '../../stores/toast-store';
+import {
+  useSubscriptionStore,
+  PRO_PRICE,
+} from '../../stores/subscription-store';
+import { UsageDashboard, PlanBadge } from '../subscription';
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -17,10 +21,7 @@ interface ProviderStatus {
 }
 
 export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
-  const [apiKey, setApiKey] = useState('');
-  const [showApiKey, setShowApiKey] = useState(false);
   const [providers, setProviders] = useState<ProviderStatus[]>([]);
-  const [savingKey, setSavingKey] = useState(false);
   const [watcherEnabled, setWatcherEnabled] = useState(false);
   const [watchingPath, setWatchingPath] = useState<string | null>(null);
   const [loadingWatcher, setLoadingWatcher] = useState(false);
@@ -47,42 +48,6 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     setWatcherEnabled(watchDownloads);
   }, [watchDownloads]);
 
-  const handleSaveApiKey = async () => {
-    if (!apiKey.trim()) return;
-
-    setSavingKey(true);
-    try {
-      const isValid = await invoke<boolean>('set_api_key', {
-        provider: 'anthropic',
-        apiKey: apiKey.trim(),
-      });
-
-      if (isValid) {
-        showSuccess('API key saved', 'Your Anthropic API key has been saved securely');
-        setApiKey('');
-        // Refresh provider status
-        const status = await invoke<ProviderStatus[]>('get_configured_providers');
-        setProviders(status);
-      } else {
-        showError('Invalid API key', 'The API key could not be validated');
-      }
-    } catch (error) {
-      showError('Failed to save', String(error));
-    } finally {
-      setSavingKey(false);
-    }
-  };
-
-  const handleDeleteApiKey = async () => {
-    try {
-      await invoke('delete_api_key', { provider: 'anthropic' });
-      showSuccess('API key deleted');
-      const status = await invoke<ProviderStatus[]>('get_configured_providers');
-      setProviders(status);
-    } catch (error) {
-      showError('Failed to delete', String(error));
-    }
-  };
 
   const handleToggleWatcher = async () => {
     setLoadingWatcher(true);
@@ -108,15 +73,16 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
     }
   };
 
+  // Check if Anthropic is configured (needed for auto-rename watcher)
   const anthropicConfigured = providers.find((p) => p.provider === 'anthropic')?.configured;
 
   if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="bg-white dark:bg-[#2a2a2a] rounded-xl shadow-2xl w-full max-w-md mx-4 border border-gray-200 dark:border-gray-700">
+      <div className="bg-white dark:bg-[#2a2a2a] rounded-xl shadow-2xl w-full max-w-md mx-4 border border-gray-200 dark:border-gray-700 max-h-[90vh] overflow-y-auto">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
+        <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700 sticky top-0 bg-white dark:bg-[#2a2a2a]">
           <h2 className="text-lg font-semibold">Settings</h2>
           <button
             onClick={onClose}
@@ -128,75 +94,6 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
 
         {/* Content */}
         <div className="p-4 space-y-6">
-          {/* API Key Section */}
-          <section>
-            <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
-              AI Configuration
-            </h3>
-
-            <div className="space-y-3">
-              {/* Status */}
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-gray-600 dark:text-gray-400">Anthropic API</span>
-                {anthropicConfigured ? (
-                  <span className="flex items-center gap-1 text-green-600">
-                    <Check size={14} />
-                    Configured
-                  </span>
-                ) : (
-                  <span className="text-gray-400">Not configured</span>
-                )}
-              </div>
-
-              {/* API Key Input */}
-              {!anthropicConfigured && (
-                <div className="space-y-2">
-                  <div className="relative">
-                    <input
-                      type={showApiKey ? 'text' : 'password'}
-                      value={apiKey}
-                      onChange={(e) => setApiKey(e.target.value)}
-                      placeholder="sk-ant-..."
-                      className="w-full px-3 py-2 pr-10 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-orange-500"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowApiKey(!showApiKey)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
-                    >
-                      {showApiKey ? <EyeOff size={16} /> : <Eye size={16} />}
-                    </button>
-                  </div>
-                  <button
-                    onClick={handleSaveApiKey}
-                    disabled={!apiKey.trim() || savingKey}
-                    className={cn(
-                      'w-full py-2 px-4 text-sm font-medium rounded-lg transition-colors',
-                      'bg-orange-500 text-white hover:bg-orange-600',
-                      'disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed'
-                    )}
-                  >
-                    {savingKey ? (
-                      <Loader2 size={16} className="animate-spin mx-auto" />
-                    ) : (
-                      'Save API Key'
-                    )}
-                  </button>
-                </div>
-              )}
-
-              {/* Delete Key Button */}
-              {anthropicConfigured && (
-                <button
-                  onClick={handleDeleteApiKey}
-                  className="text-sm text-red-600 hover:text-red-700"
-                >
-                  Remove API key
-                </button>
-              )}
-            </div>
-          </section>
-
           {/* Auto-Rename Section */}
           <section>
             <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
@@ -287,6 +184,9 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
               </div>
             </div>
           </section>
+
+          {/* Subscription Section */}
+          <SubscriptionSection />
         </div>
 
         {/* Footer */}
@@ -300,5 +200,127 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Subscription management section
+ */
+function SubscriptionSection() {
+  const {
+    tier,
+    status,
+    currentPeriodEnd,
+    isLoading,
+    openCheckout,
+    openCustomerPortal,
+    syncSubscription,
+  } = useSubscriptionStore();
+
+  // Sync on mount
+  useEffect(() => {
+    syncSubscription();
+  }, [syncSubscription]);
+
+  const periodEndDate = currentPeriodEnd
+    ? new Date(currentPeriodEnd).toLocaleDateString()
+    : null;
+
+  return (
+    <section>
+      <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
+        Subscription
+      </h3>
+
+      <div className="space-y-4">
+        {/* Current plan */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-gray-900 dark:text-gray-100">
+              Current Plan
+            </span>
+            <PlanBadge size="md" />
+            <button
+              onClick={() => {
+                console.log("[Settings] Manual subscription refresh");
+                syncSubscription();
+              }}
+              disabled={isLoading}
+              className="text-xs text-blue-500 hover:text-blue-400 disabled:opacity-50"
+            >
+              Refresh
+            </button>
+          </div>
+          {tier === 'pro' && status === 'active' && periodEndDate && (
+            <span className="text-xs text-gray-500">
+              Renews {periodEndDate}
+            </span>
+          )}
+        </div>
+
+        {/* Usage dashboard */}
+        <div className="p-3 bg-gray-100 dark:bg-[#1a1a1a] rounded-lg">
+          <p className="text-xs text-gray-500 mb-2">Today's Usage</p>
+          <UsageDashboard />
+        </div>
+
+        {/* Action buttons */}
+        <div className="space-y-2">
+          {tier === 'free' ? (
+            <button
+              onClick={() => openCheckout()}
+              disabled={isLoading}
+              className={cn(
+                'w-full flex items-center justify-center gap-2 py-2 px-4 text-sm font-medium rounded-lg transition-colors',
+                'bg-gradient-to-r from-orange-500 to-purple-500 text-white hover:from-orange-600 hover:to-purple-600',
+                isLoading && 'opacity-50 cursor-not-allowed'
+              )}
+            >
+              <Sparkles size={16} />
+              Upgrade to Pro - ${PRO_PRICE}/mo
+            </button>
+          ) : (
+            <button
+              onClick={() => openCustomerPortal()}
+              disabled={isLoading}
+              className={cn(
+                'w-full flex items-center justify-center gap-2 py-2 px-4 text-sm font-medium rounded-lg transition-colors',
+                'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300',
+                'hover:bg-gray-300 dark:hover:bg-gray-600',
+                isLoading && 'opacity-50 cursor-not-allowed'
+              )}
+            >
+              <CreditCard size={16} />
+              Manage Subscription
+            </button>
+          )}
+        </div>
+
+        {/* Pro features list (for free users) */}
+        {tier === 'free' && (
+          <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
+            <p className="text-xs text-gray-500 mb-2">Pro includes:</p>
+            <ul className="space-y-1 text-xs text-gray-600 dark:text-gray-400">
+              <li className="flex items-center gap-1.5">
+                <Check size={12} className="text-green-500" />
+                Sonnet 4.5 (50/day)
+              </li>
+              <li className="flex items-center gap-1.5">
+                <Check size={12} className="text-green-500" />
+                Opus 4.5 (10/day)
+              </li>
+              <li className="flex items-center gap-1.5">
+                <Check size={12} className="text-green-500" />
+                Extended thinking (5/day)
+              </li>
+              <li className="flex items-center gap-1.5">
+                <Check size={12} className="text-green-500" />
+                300 Haiku requests/day
+              </li>
+            </ul>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }

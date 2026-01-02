@@ -262,6 +262,15 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 '!' => {
+                    // Skip any whitespace between ! and = (AI models sometimes generate "! =")
+                    while let Some(&c) = self.peek() {
+                        if c == ' ' || c == '\t' {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+
                     if let Some(&'=') = self.peek() {
                         self.advance();
                         Ok(Token::Ne)
@@ -809,5 +818,25 @@ mod tests {
 
         let expr = RuleParser::parse("file.ext == 'jpg' || file.ext == 'png'").unwrap();
         assert!(matches!(expr, Expression::Or(_, _)));
+    }
+
+    #[test]
+    fn test_inequality_with_spaces() {
+        // AI models sometimes generate "! =" with a space - parser should tolerate this
+        let expr = RuleParser::parse("file.ext ! = 'pdf'").unwrap();
+        match expr {
+            Expression::Comparison(cmp) => {
+                assert_eq!(cmp.op, ComparisonOp::Ne);
+            }
+            _ => panic!("Expected comparison expression"),
+        }
+
+        // Multiple spaces should also work
+        let expr = RuleParser::parse("file.name !  = 'test'").unwrap();
+        assert!(matches!(expr, Expression::Comparison(_)));
+
+        // Tabs should also work
+        let expr = RuleParser::parse("file.ext !\t= 'doc'").unwrap();
+        assert!(matches!(expr, Expression::Comparison(_)));
     }
 }

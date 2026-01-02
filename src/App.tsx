@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 import { FinderLayout } from './components/layout/FinderLayout';
 import { ToastContainer } from './components/Toast/ToastContainer';
 import { AuthGuard } from './components/auth/AuthGuard';
@@ -8,6 +9,8 @@ import { DragDropProvider } from './components/drag-drop';
 import { useNavigationStore } from './stores/navigation-store';
 import { useOrganizeStore } from './stores/organize-store';
 import { useSettingsStore } from './stores/settings-store';
+import { useSubscriptionStore } from './stores/subscription-store';
+import { useToast } from './components/Toast/useToast';
 import { useAutoRename, useWatcher } from './hooks/useAutoRename';
 import { useConvexSettingsSync } from './hooks/useSyncedSettings';
 import { getHomeDirectory } from './hooks/useDirectory';
@@ -18,6 +21,8 @@ function AppContent() {
   const { currentPath, navigateTo } = useNavigationStore();
   const { checkForInterruptedJob } = useOrganizeStore();
   const { watchDownloads } = useSettingsStore();
+  const { syncSubscription } = useSubscriptionStore();
+  const { addToast } = useToast();
   const [watcherEnabled, setWatcherEnabled] = useState(false);
   const { startWatcher, stopWatcher, getStatus } = useWatcher();
   const hasAutoStarted = useRef(false);
@@ -124,6 +129,45 @@ function AppContent() {
 
   // Enable auto-rename when watcher is active
   useAutoRename(watcherEnabled);
+
+  // Handle deep links (e.g., sentinel://subscription/success)
+  useEffect(() => {
+    const handleDeepLink = async (urls: string[]) => {
+      for (const url of urls) {
+        console.log('[DeepLink] Received:', url);
+
+        try {
+          const parsed = new URL(url);
+          const path = parsed.pathname.replace(/^\/+/, '');
+
+          // Handle subscription success callback
+          if (path === 'subscription/success' || parsed.host === 'subscription') {
+            console.log('[DeepLink] Subscription success - syncing...');
+            await syncSubscription();
+            addToast({
+              title: 'Welcome to Pro!',
+              message: 'Your subscription is now active.',
+              type: 'success',
+            });
+          }
+
+          // Handle subscription cancel (user closed checkout)
+          if (path === 'subscription/cancel') {
+            console.log('[DeepLink] Subscription cancelled by user');
+          }
+        } catch (err) {
+          console.error('[DeepLink] Failed to parse URL:', err);
+        }
+      }
+    };
+
+    // Register deep-link listener
+    const unlisten = onOpenUrl(handleDeepLink);
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [syncSubscription, addToast]);
 
   return (
     <DragDropProvider>

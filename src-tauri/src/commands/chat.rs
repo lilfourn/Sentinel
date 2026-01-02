@@ -5,6 +5,7 @@
 //! - list_files_for_mention: Get files for @ mention autocomplete
 
 use crate::ai::chat::{run_chat_agent, ContextItem, ConversationMessage};
+use crate::billing::{BillingState, LimitCheckResult};
 use crate::security::PathValidator;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -41,6 +42,8 @@ pub struct ChatStreamRequest {
     pub history: Vec<ConversationMessage>,
     #[serde(default = "default_extended_thinking")]
     pub extended_thinking: bool,
+    /// Optional user ID for billing (Clerk token identifier)
+    pub user_id: Option<String>,
 }
 
 fn default_extended_thinking() -> bool {
@@ -64,10 +67,12 @@ pub struct ChatStreamResponse {
 /// - chat:complete - {} - finished
 /// - chat:error - { message } - error occurred
 /// - chat:aborted - { reason: string } - aborted by user
+/// - chat:limit-error - { reason, upgradeUrl } - limit exceeded
 #[tauri::command]
 pub async fn chat_stream(
     app: AppHandle,
     abort_flag: State<'_, ChatAbortFlag>,
+    billing: State<'_, BillingState>,
     request: ChatStreamRequest,
 ) -> Result<ChatStreamResponse, String> {
     eprintln!("[ChatCommand] Starting chat_stream");
@@ -86,6 +91,50 @@ pub async fn chat_stream(
         _ => &request.model,
     };
 
+    // === BILLING: Check limits before API call ===
+    if let Some(ref user_id) = request.user_id {
+        let subscription = billing.subscription_manager.get_cached_or_default(user_id);
+        let usage = billing.usage_tracker.get_today_usage(user_id)?;
+
+        let limit_result = billing.limit_enforcer.check_limit(
+            &subscription,
+            &usage,
+            model_id,
+            request.extended_thinking,
+        );
+
+        match limit_result {
+            LimitCheckResult::Denied { reason, upgrade_url } => {
+                let error_message = reason.to_string();
+                eprintln!("[ChatCommand] Limit denied: {}", error_message);
+
+                // Emit limit error event
+                let _ = app.emit(
+                    "chat:limit-error",
+                    serde_json::json!({
+                        "reason": error_message,
+                        "upgradeUrl": upgrade_url,
+                    }),
+                );
+
+                return Ok(ChatStreamResponse {
+                    success: false,
+                    response: None,
+                    error: Some(error_message),
+                });
+            }
+            LimitCheckResult::Allowed { remaining } => {
+                eprintln!(
+                    "[ChatCommand] Limit check passed, {} requests remaining",
+                    remaining
+                );
+            }
+        }
+    } else {
+        eprintln!("[ChatCommand] No user_id provided, skipping billing check");
+    }
+    // === END BILLING CHECK ===
+
     // Clone the abort flag Arc for passing to agent
     let abort_flag_arc = Some(Arc::clone(&abort_flag.0));
 
@@ -102,6 +151,26 @@ pub async fn chat_stream(
     {
         Ok(response) => {
             eprintln!("[ChatCommand] Chat completed successfully");
+
+            // === BILLING: Record usage on success ===
+            if let Some(ref user_id) = request.user_id {
+                // TODO: Extract actual token counts from response
+                // For now, use estimates based on response length
+                let input_tokens = (request.message.len() / 4) as u64;
+                let output_tokens = (response.len() / 4) as u64;
+
+                if let Err(e) = billing.usage_tracker.increment_request(
+                    user_id,
+                    model_id,
+                    request.extended_thinking,
+                    input_tokens,
+                    output_tokens,
+                ) {
+                    eprintln!("[ChatCommand] Failed to record usage: {}", e);
+                }
+            }
+            // === END BILLING RECORD ===
+
             Ok(ChatStreamResponse {
                 success: true,
                 response: Some(response),
