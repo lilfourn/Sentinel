@@ -1,18 +1,11 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { listen, emit, type UnlistenFn } from '@tauri-apps/api/event';
 import { useSubscriptionStore, chatModelToSubscriptionModel } from './subscription-store';
 import { showInfo } from './toast-store';
 
-// ============================================================================
-// MODULE-LEVEL STATE FOR LISTENER CLEANUP
-// ============================================================================
-
-/** Cleanup function for active listeners - stored at module scope for unmount handling */
-let activeListenerCleanup: (() => void) | null = null;
-
-/** Auto-recovery timeout for error state */
+/** Auto-recovery timeout for error state (only if user hasn't interacted) */
 const ERROR_AUTO_RECOVERY_MS = 30000;
 
 /** Maximum number of files that can be attached to a single chat message */
@@ -89,6 +82,10 @@ interface ChatState {
 
   // Streaming
   currentStreamId: string | null;
+  /** Cleanup function for active stream listeners - stored in state for proper lifecycle */
+  _activeCleanup: (() => void) | null;
+  /** Timestamp of last user interaction (for smart error auto-recovery) */
+  _lastInteraction: number;
 
   // Mention autocomplete
   isMentionOpen: boolean;
@@ -160,6 +157,8 @@ export const useChatStore = create<ChatState & ChatActions>()(
   error: null,
   extendedThinking: true,
   currentStreamId: null,
+  _activeCleanup: null,
+  _lastInteraction: Date.now(),
   isMentionOpen: false,
   mentionQuery: '',
   mentionStartIndex: -1,
@@ -285,17 +284,19 @@ export const useChatStore = create<ChatState & ChatActions>()(
       isStreaming: true,
     };
 
+    // Track user interaction for smart error auto-recovery
     set({
       messages: [...messages, userMessage, assistantMessage],
       status: 'thinking',
       error: null,
       currentStreamId: assistantMessage.id,
       activeContext: [], // Clear context after attaching to message
+      _lastInteraction: Date.now(),
     });
 
-    // Optimistic update: increment usage counter immediately for responsive UI
+    // NOTE: No optimistic usage increment - only record usage on successful completion
+    // This prevents double-charging when users retry failed requests
     const modelType = chatModelToSubscriptionModel(model);
-    useSubscriptionStore.getState().incrementUsage(modelType, extendedThinking);
 
     // Set up event listeners
     let unlistenToken: UnlistenFn | null = null;
@@ -306,11 +307,11 @@ export const useChatStore = create<ChatState & ChatActions>()(
     let unlistenLimitError: UnlistenFn | null = null;
     let listenersActive = true;
 
-    // Cleanup function - stored at module scope for unmount handling
+    // Cleanup function - stored in state for proper lifecycle management
     const cleanupListeners = () => {
       if (!listenersActive) return;
       listenersActive = false;
-      activeListenerCleanup = null;
+      set({ _activeCleanup: null });
       unlistenToken?.();
       unlistenThinking?.();
       unlistenThought?.();
@@ -319,8 +320,8 @@ export const useChatStore = create<ChatState & ChatActions>()(
       unlistenLimitError?.();
     };
 
-    // Store cleanup ref at module scope
-    activeListenerCleanup = cleanupListeners;
+    // Store cleanup ref in state (not module-level) for proper React lifecycle
+    set({ _activeCleanup: cleanupListeners });
 
     try {
       // Listen for streaming tokens
@@ -379,27 +380,34 @@ export const useChatStore = create<ChatState & ChatActions>()(
       // Listen for completion - cleanup listeners HERE, not in finally
       unlistenComplete = await listen('chat:complete', () => {
         get()._finishStream(assistantMessage.id);
-        // Sync usage with backend to ensure accuracy
+
+        // Record usage ONLY on successful completion (not optimistically)
+        // This prevents double-charging when users retry failed requests
+        useSubscriptionStore.getState().incrementUsage(modelType, extendedThinking);
         useSubscriptionStore.getState().refreshUsage();
         cleanupListeners(); // Cleanup after completion
+
+        // Emit event for UsageSync to record in Convex
+        emit('usage:record-chat', {
+          model: modelType,
+          extendedThinking,
+        });
       });
 
       // Listen for errors - cleanup listeners HERE, not in finally
       unlistenError = await listen<{ message: string }>('chat:error', (event) => {
         get()._setError(event.payload.message);
         get()._finishStream(assistantMessage.id);
-        // Revert optimistic usage increment - failed requests don't count
-        useSubscriptionStore.getState().refreshUsage();
-        cleanupListeners(); // Cleanup after error
+        // No usage recorded for failed requests (we only increment on success)
+        cleanupListeners();
       });
 
       // Listen for limit errors (subscription/quota exceeded)
       unlistenLimitError = await listen<{ reason: string; upgradeUrl?: string }>('chat:limit-error', (event) => {
         get()._setError(event.payload.reason);
         get()._finishStream(assistantMessage.id);
-        // Revert optimistic usage increment - denied requests don't count
-        useSubscriptionStore.getState().refreshUsage();
-        cleanupListeners(); // Cleanup after limit error
+        // No usage recorded for denied requests (we only increment on success)
+        cleanupListeners();
       });
 
       // Convert context items to format expected by backend
@@ -445,22 +453,20 @@ export const useChatStore = create<ChatState & ChatActions>()(
       const errorMessage = err instanceof Error ? err.message : String(err);
       get()._setError(errorMessage);
       get()._finishStream(assistantMessage.id);
-      // Revert optimistic usage increment - failed requests don't count
-      useSubscriptionStore.getState().refreshUsage();
+      // No usage recorded for failed requests (we only increment on success)
       cleanupListeners();
     }
     // NO finally block - listeners are cleaned up in complete/error handlers
   },
 
   abort: () => {
-    const { currentStreamId } = get();
+    const { currentStreamId, _activeCleanup } = get();
     if (currentStreamId) {
       invoke('abort_chat').catch(console.error);
       get()._finishStream(currentStreamId);
-      // Revert optimistic usage increment - aborted requests don't count
-      useSubscriptionStore.getState().refreshUsage();
-      // Cleanup any active listeners
-      activeListenerCleanup?.();
+      // No usage recorded for aborted requests (we only increment on success)
+      // Cleanup any active listeners (using state-stored ref, not module-level)
+      _activeCleanup?.();
     }
   },
 
@@ -624,13 +630,16 @@ export const useChatStore = create<ChatState & ChatActions>()(
   },
 
   _setError: (error) => {
+    const errorTime = Date.now();
     set({ status: 'error', error });
 
-    // Auto-recovery: reset to idle after timeout if still in error state
+    // Auto-recovery: reset to idle after timeout ONLY if user hasn't interacted
+    // This prevents clearing errors while user is actively investigating
     if (error) {
       setTimeout(() => {
-        const { status } = get();
-        if (status === 'error') {
+        const { status, _lastInteraction } = get();
+        // Only auto-recover if still in error AND user hasn't interacted since error
+        if (status === 'error' && _lastInteraction < errorTime) {
           set({ status: 'idle' });
         }
       }, ERROR_AUTO_RECOVERY_MS);

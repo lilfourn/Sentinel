@@ -12,6 +12,7 @@ import {
   FolderOpen,
   FileText,
   FileType,
+  AlertTriangle,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import {
@@ -56,6 +57,7 @@ export function ChangesPanel() {
     analysisProgress,
     executionErrors,
     openPlanEditModal,
+    isOfflineMode,
   } = useOrganizeStore();
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -105,6 +107,16 @@ export function ChangesPanel() {
           <span className="text-xs text-gray-400 truncate">{folderName}</span>
         </div>
       </div>
+
+      {/* Offline mode warning */}
+      {isOfflineMode && (
+        <div className="px-3 py-2 bg-amber-500/10 border-b border-amber-500/20">
+          <div className="flex items-center gap-2 text-xs text-amber-400">
+            <AlertTriangle size={12} className="flex-shrink-0" />
+            <span>Offline mode: changes won't be recoverable if interrupted</span>
+          </div>
+        </div>
+      )}
 
       {/* Activity feed */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
@@ -204,7 +216,7 @@ export function ChangesPanel() {
                 <div className="flex-1 h-1 bg-white/10 rounded-full overflow-hidden">
                   <div
                     className="h-full bg-orange-500 rounded-full transition-all duration-300"
-                    style={{ width: `${(completedCount / totalCount) * 100}%` }}
+                    style={{ width: `${totalCount > 0 ? (completedCount / totalCount) * 100 : 0}%` }}
                   />
                 </div>
                 <span className="text-[10px] text-gray-400 tabular-nums">

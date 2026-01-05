@@ -7,6 +7,7 @@ import { AuthGuard } from './components/auth/AuthGuard';
 import { InterruptedJobBanner } from './components/organize/InterruptedJobBanner';
 import { DragDropProvider } from './components/drag-drop';
 import { PlanEditModal } from './components/PlanEditModal';
+import { UpdateDialog } from './components/UpdateDialog/UpdateDialog';
 import { useNavigationStore } from './stores/navigation-store';
 import { useOrganizeStore } from './stores/organize-store';
 import { useSettingsStore } from './stores/settings-store';
@@ -174,6 +175,7 @@ function AppContent() {
     <DragDropProvider>
       <FinderLayout />
       <ToastContainer />
+      <UpdateDialog />
       <InterruptedJobBanner />
       <PlanEditModal />
     </DragDropProvider>

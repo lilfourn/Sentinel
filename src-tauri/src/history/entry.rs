@@ -102,6 +102,7 @@ impl OperationRecord {
     }
 
     /// Get a human-readable description of the operation
+    #[allow(dead_code)]
     pub fn description(&self) -> String {
         match self {
             OperationRecord::CreateFolder { path } => {
@@ -191,6 +192,7 @@ pub struct HistorySession {
 
 impl HistorySession {
     /// Get total operation count
+    #[allow(dead_code)]
     pub fn operation_count(&self) -> usize {
         self.operations.len()
     }
@@ -343,6 +345,7 @@ impl HistoryIndex {
     }
 
     /// List all folders
+    #[allow(dead_code)]
     pub fn list_folders(&self) -> Vec<&FolderIndexEntry> {
         self.folders.values().collect()
     }

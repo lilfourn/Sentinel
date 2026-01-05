@@ -1,6 +1,6 @@
 import { useState, useEffect, Component, ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { X, Check, CreditCard, Sparkles, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
+import { X, Check, CreditCard, Sparkles, ChevronDown, ChevronUp, AlertTriangle, RefreshCw, Download } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useWatcher } from '../../hooks/useAutoRename';
 import { useSyncedSettings } from '../../hooks/useSyncedSettings';
@@ -14,6 +14,7 @@ import {
   WatchedFoldersManager,
   CustomRulesEditor,
 } from '../downloads-watcher';
+import { useUpdater } from '../../hooks/useUpdater';
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -139,6 +140,9 @@ export function SettingsPanel({ isOpen, onClose }: SettingsPanelProps) {
               </div>
             </div>
           </section>
+
+          {/* Software Updates Section */}
+          <UpdatesSection />
 
           {/* Subscription Section */}
           <SubscriptionSection />
@@ -317,6 +321,75 @@ function AutoRenameSentinelSection({
           </div>
         </div>
       )}
+    </section>
+  );
+}
+
+/**
+ * Software Updates section
+ */
+function UpdatesSection() {
+  const {
+    status,
+    updateInfo,
+    lastChecked,
+    checkForUpdates,
+    downloadAndInstall,
+  } = useUpdater();
+
+  const lastCheckedText = lastChecked
+    ? `Last checked: ${new Date(lastChecked).toLocaleString()}`
+    : 'Never checked';
+
+  return (
+    <section>
+      <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
+        Software Updates
+      </h3>
+
+      <div className="space-y-3">
+        {/* Current version info */}
+        <div className="flex items-center justify-between text-xs text-gray-500">
+          <span>{lastCheckedText}</span>
+          {status === 'up-to-date' && (
+            <span className="text-green-500 flex items-center gap-1">
+              <Check size={12} />
+              Up to date
+            </span>
+          )}
+        </div>
+
+        {/* Update available banner */}
+        {status === 'available' && updateInfo && (
+          <div className="p-3 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg">
+            <p className="text-sm text-orange-700 dark:text-orange-300 font-medium">
+              Version {updateInfo.version} is available!
+            </p>
+            <button
+              onClick={downloadAndInstall}
+              className="mt-2 w-full flex items-center justify-center gap-2 py-1.5 px-3 text-xs font-medium bg-orange-500 text-white rounded hover:bg-orange-600 transition-colors"
+            >
+              <Download size={12} />
+              Download & Install
+            </button>
+          </div>
+        )}
+
+        {/* Check for updates button */}
+        <button
+          onClick={() => checkForUpdates(false)}
+          disabled={status === 'checking' || status === 'downloading'}
+          className={cn(
+            'w-full flex items-center justify-center gap-2 py-2 px-4 text-sm font-medium rounded-lg transition-colors',
+            'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300',
+            'hover:bg-gray-300 dark:hover:bg-gray-600',
+            (status === 'checking' || status === 'downloading') && 'opacity-50 cursor-not-allowed'
+          )}
+        >
+          <RefreshCw size={14} className={status === 'checking' ? 'animate-spin' : ''} />
+          {status === 'checking' ? 'Checking...' : 'Check for Updates'}
+        </button>
+      </div>
     </section>
   );
 }

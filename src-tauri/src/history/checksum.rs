@@ -68,6 +68,7 @@ pub fn compute_file_checksum(path: &Path) -> Result<FileChecksum, String> {
 }
 
 /// Verify a file matches its expected checksum
+#[allow(dead_code)]
 pub fn verify_checksum(path: &Path, expected: &FileChecksum) -> Result<bool, String> {
     // Check if file exists
     if !path.exists() {
@@ -86,6 +87,7 @@ pub fn verify_checksum(path: &Path, expected: &FileChecksum) -> Result<bool, Str
 }
 
 /// Compute checksums for a list of paths
+#[allow(dead_code)]
 pub fn compute_checksums_batch(paths: &[&Path]) -> HashMap<String, FileChecksum> {
     let mut checksums = HashMap::new();
 
@@ -105,6 +107,7 @@ pub fn compute_checksums_batch(paths: &[&Path]) -> HashMap<String, FileChecksum>
 
 /// Verify multiple files against their expected checksums
 /// Returns a list of paths that don't match
+#[allow(dead_code)]
 pub fn verify_checksums_batch(
     expected: &HashMap<String, FileChecksum>,
 ) -> Vec<(String, ChecksumMismatch)> {
@@ -141,6 +144,7 @@ pub fn verify_checksums_batch(
 
 /// Type of checksum mismatch
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum ChecksumMismatch {
     /// File is missing
     Missing,

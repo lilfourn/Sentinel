@@ -39,15 +39,15 @@ export function SessionCard({ session, isFirst, onUndo }: SessionCardProps) {
       className={cn(
         'relative rounded-lg border p-3 transition-all',
         session.undone
-          ? 'border-gray-600/30 bg-gray-800/20 opacity-60'
+          ? 'border-gray-300/30 dark:border-gray-600/30 bg-gray-100/50 dark:bg-gray-800/20 opacity-60'
           : isFirst
-            ? 'border-blue-500/30 bg-blue-500/5'
-            : 'border-white/10 bg-white/[0.02] hover:bg-white/[0.04]'
+            ? 'border-orange-500/30 bg-orange-500/5'
+            : 'border-black/5 dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.02] hover:bg-black/[0.04] dark:hover:bg-white/[0.04]'
       )}
     >
       {/* Timeline connector */}
       {!isFirst && (
-        <div className="absolute -top-3 left-6 w-px h-3 bg-white/10" />
+        <div className="absolute -top-3 left-6 w-px h-3 bg-black/10 dark:bg-white/10" />
       )}
 
       {/* Header */}
@@ -55,31 +55,37 @@ export function SessionCard({ session, isFirst, onUndo }: SessionCardProps) {
         <div className="flex items-center gap-2">
           <div
             className={cn(
-              'w-5 h-5 rounded-full flex items-center justify-center',
+              'w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0',
               session.undone
-                ? 'bg-gray-600/30'
+                ? 'bg-gray-400/30 dark:bg-gray-600/30'
                 : isFirst
-                  ? 'bg-blue-500/20'
-                  : 'bg-white/10'
+                  ? 'bg-orange-500/20'
+                  : 'bg-black/5 dark:bg-white/10'
             )}
           >
             {session.undone ? (
               <Undo2 size={10} className="text-gray-400" />
             ) : (
-              <RotateCcw size={10} className={isFirst ? 'text-blue-400' : 'text-gray-400'} />
+              <RotateCcw size={10} className={isFirst ? 'text-orange-500' : 'text-gray-400'} />
             )}
           </div>
-          <div className="flex items-center gap-1.5 text-xs text-gray-400">
+          <div className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
             <Clock size={10} />
             <span>{timeAgo}</span>
           </div>
+          {/* Latest indicator - inline with time */}
+          {isFirst && !session.undone && (
+            <span className="px-1.5 py-0.5 text-[10px] font-medium text-orange-600 dark:text-orange-400 bg-orange-500/15 rounded">
+              Latest
+            </span>
+          )}
         </div>
 
         {/* Undo button */}
         {!session.undone && (
           <button
             onClick={() => onUndo(session.sessionId)}
-            className="px-2 py-1 text-xs rounded-md bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white transition-colors flex items-center gap-1"
+            className="px-2 py-1 text-xs rounded-md bg-orange-500/10 hover:bg-orange-500/20 text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300 transition-colors flex items-center gap-1 flex-shrink-0"
           >
             <RotateCcw size={10} />
             <span>Undo</span>
@@ -87,7 +93,7 @@ export function SessionCard({ session, isFirst, onUndo }: SessionCardProps) {
         )}
 
         {session.undone && (
-          <span className="flex items-center gap-1 text-xs text-gray-500">
+          <span className="flex items-center gap-1 text-xs text-gray-500 flex-shrink-0">
             <CheckCircle2 size={10} />
             <span>Undone</span>
           </span>
@@ -95,12 +101,12 @@ export function SessionCard({ session, isFirst, onUndo }: SessionCardProps) {
       </div>
 
       {/* Instruction */}
-      <p className="text-sm text-gray-200 mb-1.5 line-clamp-2">
+      <p className="text-sm text-gray-800 dark:text-gray-200 mb-1.5 line-clamp-2">
         {session.userInstruction || 'AI Organization'}
       </p>
 
       {/* Plan description */}
-      <p className="text-xs text-gray-400 line-clamp-2 mb-2">
+      <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2 mb-2">
         {session.planDescription}
       </p>
 
@@ -114,13 +120,6 @@ export function SessionCard({ session, isFirst, onUndo }: SessionCardProps) {
           {session.operationCount} operations
         </span>
       </div>
-
-      {/* First session indicator */}
-      {isFirst && !session.undone && (
-        <div className="absolute -right-1 -top-1 px-1.5 py-0.5 text-[10px] font-medium text-blue-400 bg-blue-500/20 rounded-md">
-          Latest
-        </div>
-      )}
     </div>
   );
 }

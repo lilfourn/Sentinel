@@ -17,9 +17,17 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+use tracing::{debug, warn};
 
 /// Maximum text content size per file (20KB)
 const MAX_FILE_CONTENT: usize = 20_000;
+
+/// Maximum total context size across all items (200KB)
+/// Prevents OOM when multiple large files are attached
+const MAX_TOTAL_CONTEXT_SIZE: usize = 200_000;
+
+/// Maximum image size for vision (5MB)
+const MAX_IMAGE_SIZE: usize = 5_000_000;
 
 /// Security notice appended after user content to defend against prompt injection
 const INJECTION_DEFENSE_NOTICE: &str = r#"
@@ -122,13 +130,14 @@ pub struct ImageContext {
 pub fn hydrate_context(context_items: &[ContextItem]) -> Result<HydratedContext, String> {
     let mut sections: Vec<String> = Vec::new();
     let mut images: Vec<ImageContext> = Vec::new();
+    let mut total_context_size: usize = 0;
 
     // Limit context items
     let items = if context_items.len() > MAX_CONTEXT_ITEMS {
-        eprintln!(
-            "[ChatContext] Limiting context from {} to {} items",
-            context_items.len(),
-            MAX_CONTEXT_ITEMS
+        warn!(
+            from = context_items.len(),
+            to = MAX_CONTEXT_ITEMS,
+            "Limiting context items"
         );
         &context_items[..MAX_CONTEXT_ITEMS]
     } else {
@@ -136,47 +145,77 @@ pub fn hydrate_context(context_items: &[ContextItem]) -> Result<HydratedContext,
     };
 
     for item in items {
+        // Check if we've exceeded total context size limit
+        if total_context_size >= MAX_TOTAL_CONTEXT_SIZE {
+            warn!(
+                total_size = total_context_size,
+                limit = MAX_TOTAL_CONTEXT_SIZE,
+                "Context size exceeded, skipping remaining items"
+            );
+            sections.push(format!(
+                "\n[Context truncated: exceeded {} byte limit]\n",
+                MAX_TOTAL_CONTEXT_SIZE
+            ));
+            break;
+        }
+
         match item.strategy.as_str() {
             "hologram" => {
                 // V5 HOLOGRAM - Folder compression
                 match hydrate_folder_hologram(&item.path, &item.name) {
-                    Ok(hologram) => sections.push(hologram),
+                    Ok(hologram) => {
+                        total_context_size += hologram.len();
+                        sections.push(hologram);
+                    }
                     Err(e) => {
-                        eprintln!("[ChatContext] Hologram error for {}: {}", item.path, e);
-                        sections.push(format!(
+                        warn!(path = item.path, error = %e, "Hologram generation error");
+                        let error_section = format!(
                             "### Folder: {}\nPath: {}\n\nError generating summary: {}",
                             item.name, item.path, e
-                        ));
+                        );
+                        total_context_size += error_section.len();
+                        sections.push(error_section);
                     }
                 }
             }
             "read" => {
                 // Text file content
                 match hydrate_file_content(&item.path, &item.name) {
-                    Ok(content) => sections.push(content),
+                    Ok(content) => {
+                        total_context_size += content.len();
+                        sections.push(content);
+                    }
                     Err(e) => {
-                        eprintln!("[ChatContext] Read error for {}: {}", item.path, e);
-                        sections.push(format!(
+                        warn!(path = item.path, error = %e, "File read error");
+                        let error_section = format!(
                             "### File: {}\nPath: {}\n\nError reading file: {}",
                             item.name, item.path, e
-                        ));
+                        );
+                        total_context_size += error_section.len();
+                        sections.push(error_section);
                     }
                 }
             }
             "vision" => {
-                // Image for multimodal
+                // Image for multimodal (check size limit)
                 match hydrate_image(&item.path, &item.name, item.mime_type.as_deref()) {
-                    Ok(Some(img)) => images.push(img),
+                    Ok(Some(img)) => {
+                        if img.base64.len() > MAX_IMAGE_SIZE {
+                            warn!(path = item.path, size = img.base64.len(), "Skipping oversized image");
+                        } else {
+                            images.push(img);
+                        }
+                    }
                     Ok(None) => {
-                        eprintln!("[ChatContext] Skipping large image: {}", item.path);
+                        debug!(path = item.path, "Skipping large image");
                     }
                     Err(e) => {
-                        eprintln!("[ChatContext] Image error for {}: {}", item.path, e);
+                        warn!(path = item.path, error = %e, "Image load error");
                     }
                 }
             }
             _ => {
-                eprintln!("[ChatContext] Unknown strategy: {}", item.strategy);
+                warn!(strategy = item.strategy, "Unknown context strategy");
             }
         }
     }
@@ -199,7 +238,7 @@ pub fn hydrate_context(context_items: &[ContextItem]) -> Result<HydratedContext,
 
 /// Generate V5 Hologram for a folder
 fn hydrate_folder_hologram(path: &str, name: &str) -> Result<String, String> {
-    eprintln!("[ChatContext] Generating hologram for folder: {}", path);
+    debug!(path = path, "Generating hologram for folder");
 
     let folder_path = Path::new(path);
     if !folder_path.is_dir() {
@@ -225,7 +264,7 @@ fn hydrate_folder_hologram(path: &str, name: &str) -> Result<String, String> {
 /// Read text content from a file (truncated)
 /// Uses DocumentParser for supported formats (PDF, DOCX, XLSX, etc.)
 fn hydrate_file_content(path: &str, name: &str) -> Result<String, String> {
-    eprintln!("[ChatContext] Reading file: {}", path);
+    debug!(path = path, "Reading file content");
 
     let file_path = Path::new(path);
     let ext = file_path.extension().and_then(|e| e.to_str());
@@ -235,10 +274,10 @@ fn hydrate_file_content(path: &str, name: &str) -> Result<String, String> {
         let parser = DocumentParser::new();
         match parser.parse(file_path) {
             Ok(parsed) => {
-                eprintln!(
-                    "[ChatContext] Document parsed: {} chars, method: {:?}",
-                    parsed.text.len(),
-                    parsed.method
+                debug!(
+                    chars = parsed.text.len(),
+                    method = ?parsed.method,
+                    "Document parsed"
                 );
 
                 // Truncate to 20KB for context window
@@ -267,10 +306,7 @@ fn hydrate_file_content(path: &str, name: &str) -> Result<String, String> {
                 return Ok(format!("{}\n```\n{}\n```", header, sanitized));
             }
             Err(e) => {
-                eprintln!(
-                    "[ChatContext] Document parse failed, falling back to raw read: {}",
-                    e
-                );
+                debug!(error = %e, "Document parse failed, falling back to raw read");
                 // Fall through to plain text read
             }
         }
@@ -305,16 +341,13 @@ fn hydrate_image(
     name: &str,
     mime_type: Option<&str>,
 ) -> Result<Option<ImageContext>, String> {
-    eprintln!("[ChatContext] Loading image: {}", path);
+    debug!(path = path, "Loading image");
 
     let bytes = fs::read(path).map_err(|e| format!("Failed to read image {}: {}", path, e))?;
 
     // Skip very large images (> 5MB)
     if bytes.len() > 5 * 1024 * 1024 {
-        eprintln!(
-            "[ChatContext] Skipping large image: {} bytes",
-            bytes.len()
-        );
+        debug!(size = bytes.len(), "Skipping large image");
         return Ok(None);
     }
 
@@ -354,20 +387,13 @@ fn scan_folder_recursive(
                 }
             }
             Err(e) => {
-                eprintln!(
-                    "[ChatContext] Skipping file {}: {}",
-                    entry_path.display(),
-                    e
-                );
+                debug!(path = %entry_path.display(), error = %e, "Skipping file");
             }
         }
 
         // Limit total files scanned
         if files.len() >= MAX_FILES_PER_FOLDER {
-            eprintln!(
-                "[ChatContext] Folder scan limit reached: {} files",
-                files.len()
-            );
+            warn!(count = files.len(), "Folder scan limit reached");
             break;
         }
     }

@@ -135,6 +135,104 @@ impl LimitEnforcer {
         tier == SubscriptionTier::Pro
     }
 
+    /// Check if an organize operation is allowed
+    ///
+    /// Organize operations are expensive (GPT + Claude) and strictly limited.
+    pub fn check_organize_limit(
+        &self,
+        subscription: &SubscriptionCache,
+        usage: &DailyUsage,
+    ) -> LimitCheckResult {
+        let tier = subscription.tier;
+        let status = subscription.status;
+
+        // Check subscription status
+        let is_subscription_valid = match status {
+            SubscriptionStatus::Active | SubscriptionStatus::Trialing => true,
+            SubscriptionStatus::Canceled => {
+                if let Some(period_end) = subscription.current_period_end {
+                    let now_ms = Utc::now().timestamp_millis();
+                    period_end > now_ms
+                } else {
+                    false
+                }
+            }
+            SubscriptionStatus::PastDue | SubscriptionStatus::Incomplete => false,
+        };
+
+        if !is_subscription_valid {
+            return LimitCheckResult::Denied {
+                reason: LimitDenialReason::SubscriptionInactive { status },
+                upgrade_url: Some(Self::get_upgrade_url()),
+            };
+        }
+
+        let limits = DailyLimits::for_tier(tier);
+        let used = usage.organize_requests;
+        let limit = limits.organize_requests;
+
+        if used >= limit {
+            return LimitCheckResult::Denied {
+                reason: LimitDenialReason::OrganizeLimitExceeded { limit, used },
+                upgrade_url: if tier == SubscriptionTier::Free {
+                    Some(Self::get_upgrade_url())
+                } else {
+                    None
+                },
+            };
+        }
+
+        LimitCheckResult::Allowed { remaining: limit - used }
+    }
+
+    /// Check if a rename operation is allowed
+    pub fn check_rename_limit(
+        &self,
+        subscription: &SubscriptionCache,
+        usage: &DailyUsage,
+    ) -> LimitCheckResult {
+        let tier = subscription.tier;
+        let status = subscription.status;
+
+        // Check subscription status
+        let is_subscription_valid = match status {
+            SubscriptionStatus::Active | SubscriptionStatus::Trialing => true,
+            SubscriptionStatus::Canceled => {
+                if let Some(period_end) = subscription.current_period_end {
+                    let now_ms = Utc::now().timestamp_millis();
+                    period_end > now_ms
+                } else {
+                    false
+                }
+            }
+            SubscriptionStatus::PastDue | SubscriptionStatus::Incomplete => false,
+        };
+
+        if !is_subscription_valid {
+            return LimitCheckResult::Denied {
+                reason: LimitDenialReason::SubscriptionInactive { status },
+                upgrade_url: Some(Self::get_upgrade_url()),
+            };
+        }
+
+        let limits = DailyLimits::for_tier(tier);
+        let used = usage.rename_requests;
+        let limit = limits.rename_requests;
+
+        if used >= limit {
+            return LimitCheckResult::Denied {
+                reason: LimitDenialReason::RenameLimitExceeded { limit, used },
+                upgrade_url: if tier == SubscriptionTier::Free {
+                    Some(Self::get_upgrade_url())
+                } else {
+                    None
+                },
+            };
+        }
+
+        LimitCheckResult::Allowed { remaining: limit - used }
+    }
+
     /// Check if monthly token quota allows a request
     ///
     /// Returns Ok(()) if within quota, or Err with denial reason if exceeded.
@@ -241,6 +339,8 @@ mod tests {
             sonnet_requests: sonnet,
             opus_requests: opus,
             extended_thinking_requests: thinking,
+            organize_requests: 0,
+            rename_requests: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
         }

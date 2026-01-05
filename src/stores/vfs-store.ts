@@ -2,7 +2,55 @@ import { create } from 'zustand';
 import type { FileEntry } from '../types/file';
 import type { GhostFileEntry, GhostState } from '../types/ghost';
 import type { VfsEvent, ConflictPayload, IndexingProgressPayload } from '../types/vfs';
-import type { OrganizePlan } from './organize-store';
+import { isIndexingProgressPayload, isConflictPayload } from '../types/vfs';
+import type { OrganizePlan } from './organize/plan-store';
+
+/**
+ * Result from the backend vfs_validate_plan command.
+ * Provides structured validation with plan hash for sync validation.
+ */
+export interface VfsValidationResult {
+  /** Whether the plan is valid (no errors) */
+  valid: boolean;
+  /** List of validation errors */
+  errors: string[];
+  /** Hash of the plan for sync validation */
+  planHash: string;
+  /** Plan ID for reference */
+  planId: string;
+}
+
+/**
+ * Runtime type guard for VfsValidationResult.
+ * Validates that backend responses match the expected shape.
+ */
+export function isVfsValidationResult(value: unknown): value is VfsValidationResult {
+  if (typeof value !== 'object' || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    typeof obj.valid === 'boolean' &&
+    Array.isArray(obj.errors) &&
+    obj.errors.every((e) => typeof e === 'string') &&
+    typeof obj.planHash === 'string' &&
+    typeof obj.planId === 'string'
+  );
+}
+
+/**
+ * Validates and parses a backend validation result.
+ * Throws descriptive error if shape doesn't match.
+ */
+export function parseVfsValidationResult(value: unknown): VfsValidationResult {
+  if (!isVfsValidationResult(value)) {
+    const received = JSON.stringify(value, null, 2);
+    throw new Error(
+      `Invalid VfsValidationResult from backend. ` +
+      `Expected {valid: boolean, errors: string[], planHash: string, planId: string}. ` +
+      `Received: ${received.slice(0, 200)}${received.length > 200 ? '...' : ''}`
+    );
+  }
+  return value;
+}
 
 interface VfsState {
   /** Whether the VFS simulation is active */
@@ -19,6 +67,10 @@ interface VfsState {
   conflicts: ConflictPayload[];
   /** Target folder being organized */
   targetFolder: string | null;
+  /** Plan ID of the currently simulated plan (for VFS-WAL sync validation) */
+  simulatedPlanId: string | null;
+  /** Cached validation result from backend (includes plan hash for sync) */
+  validationResult: VfsValidationResult | null;
 }
 
 interface VfsActions {
@@ -36,6 +88,12 @@ interface VfsActions {
   addConflict: (conflict: ConflictPayload) => void;
   /** Clear conflicts */
   clearConflicts: () => void;
+  /** Get the currently simulated plan ID (for VFS-WAL sync validation) */
+  getSimulatedPlanId: () => string | null;
+  /** Set validation result from backend */
+  setValidationResult: (result: VfsValidationResult | null) => void;
+  /** Get the cached plan hash (for sync validation) */
+  getPlanHash: () => string | null;
 }
 
 /**
@@ -87,6 +145,8 @@ export const useVfsStore = create<VfsState & VfsActions>((set, get) => ({
   indexingProgress: null,
   conflicts: [],
   targetFolder: null,
+  simulatedPlanId: null,
+  validationResult: null,
 
   initializeVfs: (targetFolder: string) => {
     set({
@@ -97,19 +157,29 @@ export const useVfsStore = create<VfsState & VfsActions>((set, get) => ({
       movedEntries: new Map(),
       indexingProgress: null,
       conflicts: [],
+      simulatedPlanId: null,
+      validationResult: null,
     });
   },
 
   handleVfsEvent: (event: VfsEvent) => {
     switch (event.type) {
       case 'indexing_progress':
-        set({ indexingProgress: event.payload as unknown as IndexingProgressPayload });
+        if (isIndexingProgressPayload(event.payload)) {
+          set({ indexingProgress: event.payload });
+        } else {
+          console.warn('[VFS] Invalid indexing_progress payload:', event.payload);
+        }
         break;
       case 'indexing_complete':
         set({ indexingProgress: null });
         break;
       case 'conflict_detected':
-        get().addConflict(event.payload as unknown as ConflictPayload);
+        if (isConflictPayload(event.payload)) {
+          get().addConflict(event.payload);
+        } else {
+          console.warn('[VFS] Invalid conflict_detected payload:', event.payload);
+        }
         break;
       case 'operation_complete':
         // Could update individual operation states here
@@ -218,6 +288,7 @@ export const useVfsStore = create<VfsState & VfsActions>((set, get) => ({
       removedPaths,
       movedEntries,
       targetFolder: plan.targetFolder,
+      simulatedPlanId: plan.planId, // Store planId for VFS-WAL sync validation
     });
   },
 
@@ -281,6 +352,8 @@ export const useVfsStore = create<VfsState & VfsActions>((set, get) => ({
       indexingProgress: null,
       conflicts: [],
       targetFolder: null,
+      simulatedPlanId: null,
+      validationResult: null,
     });
   },
 
@@ -293,4 +366,12 @@ export const useVfsStore = create<VfsState & VfsActions>((set, get) => ({
   clearConflicts: () => {
     set({ conflicts: [] });
   },
+
+  getSimulatedPlanId: () => get().simulatedPlanId,
+
+  setValidationResult: (result: VfsValidationResult | null) => {
+    set({ validationResult: result });
+  },
+
+  getPlanHash: () => get().validationResult?.planHash ?? null,
 }));

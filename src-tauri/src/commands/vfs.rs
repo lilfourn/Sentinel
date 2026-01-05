@@ -138,10 +138,95 @@ pub async fn vfs_get_stats(
     Ok(vfs.stats())
 }
 
-/// Simulate an organize plan on the VFS
+/// Result of VFS plan validation
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VfsValidationResult {
+    /// Whether the plan is valid (no errors)
+    pub valid: bool,
+    /// List of validation errors
+    pub errors: Vec<String>,
+    /// Hash of the plan for sync validation
+    pub plan_hash: String,
+    /// Plan ID for reference
+    pub plan_id: String,
+}
+
+/// Validate an organize plan on the VFS
+///
+/// This is the enhanced validation command that returns structured results
+/// including a plan hash for sync validation between frontend and backend.
+#[tauri::command]
+pub async fn vfs_validate_plan(
+    plan: OrganizePlan,
+    vfs_state: State<'_, VFSState>,
+) -> Result<VfsValidationResult, String> {
+    let mut state = vfs_state.write().await;
+    let vfs = state
+        .as_mut()
+        .ok_or("VFS not initialized. Call scan_folder_vfs first.")?;
+
+    // Compute plan hash for sync validation
+    let plan_hash = plan.compute_hash();
+    let plan_id = plan.plan_id.clone();
+
+    let operations: Vec<SimulatedOperation> = plan
+        .operations
+        .iter()
+        .filter_map(|op| {
+            match op.op_type.as_str() {
+                "move" => {
+                    let src = op.source.as_ref()?;
+                    let dest = op.destination.as_ref()?;
+                    Some(SimulatedOperation::Move {
+                        source: src.clone(),
+                        destination: dest.clone(),
+                    })
+                }
+                "create_folder" => {
+                    let path = op.path.as_ref()?;
+                    Some(SimulatedOperation::CreateFolder { path: path.clone() })
+                }
+                "delete" | "trash" => {
+                    let path = op.path.as_ref().or(op.source.as_ref())?;
+                    Some(SimulatedOperation::Delete { path: path.clone() })
+                }
+                "rename" => {
+                    let path = op.path.as_ref()?;
+                    let new_name = op.new_name.as_ref()?;
+                    let path_buf = PathBuf::from(path);
+                    let new_path = path_buf
+                        .parent()
+                        .map(|p| p.join(new_name))
+                        .unwrap_or_else(|| PathBuf::from(new_name));
+                    Some(SimulatedOperation::Move {
+                        source: path.clone(),
+                        destination: new_path.to_string_lossy().to_string(),
+                    })
+                }
+                _ => None,
+            }
+        })
+        .collect();
+
+    let errors = match crate::vfs::simulate_plan(vfs, operations) {
+        Ok(()) => Vec::new(),
+        Err(e) => e,
+    };
+
+    Ok(VfsValidationResult {
+        valid: errors.is_empty(),
+        errors,
+        plan_hash,
+        plan_id,
+    })
+}
+
+/// Simulate an organize plan on the VFS (legacy)
 ///
 /// Validates all operations in the plan without modifying the real filesystem.
 /// Returns a list of errors if any operations would fail.
+/// Note: Prefer vfs_validate_plan for new code.
 #[tauri::command]
 pub async fn vfs_simulate_plan(
     plan: OrganizePlan,

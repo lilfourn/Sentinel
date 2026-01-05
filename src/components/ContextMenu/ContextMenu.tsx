@@ -10,6 +10,7 @@ import {
   ExternalLink,
   FolderPlus,
   FilePlus,
+  Wand2,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
@@ -205,6 +206,8 @@ export function buildFileContextMenuItems(
   handlers: {
     onOpen?: () => void;
     onOrganizeWithAI?: () => void;
+    onAIRename?: () => void;
+    onAIBatchRename?: () => void;
     onRename?: () => void;
     onCopy?: () => void;
     onPaste?: () => void;
@@ -241,6 +244,23 @@ export function buildFileContextMenuItems(
     icon: <Edit3 size={14} />,
     onClick: handlers.onRename,
   });
+
+  // AI Rename (single file) or AI Batch Rename (folder)
+  if (entry.isDirectory && handlers.onAIBatchRename) {
+    items.push({
+      id: 'ai-batch-rename',
+      label: 'AI Rename Files',
+      icon: <Wand2 size={14} className="text-orange-500" />,
+      onClick: handlers.onAIBatchRename,
+    });
+  } else if (!entry.isDirectory && handlers.onAIRename) {
+    items.push({
+      id: 'ai-rename',
+      label: 'AI Rename',
+      icon: <Wand2 size={14} className="text-orange-500" />,
+      onClick: handlers.onAIRename,
+    });
+  }
 
   // Copy
   items.push({

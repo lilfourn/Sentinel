@@ -57,6 +57,9 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_macos_permissions::init())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
         .manage(watcher_handle)
         .manage(vector_state)
         .manage(tree_state)
@@ -97,6 +100,8 @@ pub fn run() {
             get_rename_suggestion,
             apply_rename,
             undo_rename,
+            get_batch_rename_suggestions,
+            apply_batch_rename,
             generate_organize_plan_hybrid,
             generate_simplification_plan,
             // Job persistence commands
@@ -147,6 +152,7 @@ pub fn run() {
             vfs_search_content,
             vfs_get_node,
             vfs_get_stats,
+            vfs_validate_plan,
             vfs_simulate_plan,
             vfs_stage_move,
             vfs_stage_create_folder,

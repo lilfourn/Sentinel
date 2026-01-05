@@ -4,6 +4,7 @@ import { useGhostStore } from '../stores/ghost-store';
 import { useOrganizeStore } from '../stores/organize-store';
 import type { FileEntry } from '../types/file';
 import type { GhostFileEntry, GhostState } from '../types/ghost';
+import type { OrganizePhase } from '../stores/organize';
 
 /**
  * Hook that merges real file entries with ghost entries based on the current
@@ -27,11 +28,12 @@ export function useMergedEntries(
   const getMergedEntries = useVfsStore((state) => state.getMergedEntries);
   const ghostMap = useGhostStore((state) => state.ghostMap);
   const showGhosts = useGhostStore((state) => state.showGhosts);
-  const currentPhase = useOrganizeStore((state) => state.currentPhase);
+  const phase = useOrganizeStore((state) => state.phase) as OrganizePhase;
 
   return useMemo(() => {
-    // If VFS is active and we're in simulation phase, use VFS store for merging
-    if (vfsIsActive && (currentPhase === 'planning' || currentPhase === 'executing')) {
+    // If VFS is active and we're in a phase where ghost preview should show, use VFS store for merging
+    const showVfsGhosts = phase === 'simulation' || phase === 'review' || phase === 'committing';
+    if (vfsIsActive && showVfsGhosts) {
       return getMergedEntries(realEntries, currentPath);
     }
 
@@ -112,7 +114,7 @@ export function useMergedEntries(
     });
 
     return result;
-  }, [realEntries, currentPath, vfsIsActive, getMergedEntries, ghostMap, showGhosts, currentPhase]);
+  }, [realEntries, currentPath, vfsIsActive, getMergedEntries, ghostMap, showGhosts, phase]);
 }
 
 /**

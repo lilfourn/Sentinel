@@ -4,7 +4,6 @@
 //! Each worker analyzes a batch of files (5 per batch) and returns
 //! structured analysis including suggested filenames.
 
-use super::utils::extract_json_array;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -49,53 +48,156 @@ pub struct FileContent {
     pub extension: String,
 }
 
-/// OpenAI worker for parallel file analysis
-pub struct OpenAIWorker {
-    client: Client,
-    api_key: String,
-    model: String,
+/// Calculate optimal worker count based on file count
+/// GPT-5-nano allows 6K RPM (100 req/sec), so we can be aggressive with parallelism
+pub fn calculate_worker_count(file_count: usize) -> usize {
+    match file_count {
+        0..=10 => 8,
+        11..=25 => 16,
+        26..=50 => 32,
+        51..=100 => 48,
+        _ => 64,
+    }
 }
 
-impl OpenAIWorker {
-    /// Create a new OpenAI worker
-    pub fn new(api_key: String) -> Self {
-        Self {
-            client: Client::builder()
-                .timeout(Duration::from_secs(60))
-                .build()
-                .expect("Failed to create HTTP client"),
-            api_key,
-            model: "gpt-5-nano-2025-08-07".to_string(),
-        }
+/// Split files into batches for workers
+pub fn create_file_batches(files: Vec<FileContent>, batch_size: usize) -> Vec<Vec<FileContent>> {
+    files
+        .chunks(batch_size)
+        .map(|chunk| chunk.to_vec())
+        .collect()
+}
+
+/// Run multiple workers in parallel with shared HTTP client (no progress tracking)
+pub async fn run_parallel_workers(
+    api_key: String,
+    batches: Vec<Vec<FileContent>>,
+    max_concurrent: usize,
+) -> Vec<Result<Vec<FileAnalysis>, String>> {
+    run_parallel_workers_with_progress(api_key, batches, max_concurrent, None).await
+}
+
+/// Run multiple workers in parallel with real-time progress tracking
+/// Uses FuturesUnordered to emit progress as each batch completes
+pub async fn run_parallel_workers_with_progress(
+    api_key: String,
+    batches: Vec<Vec<FileContent>>,
+    max_concurrent: usize,
+    progress_sender: Option<tokio::sync::mpsc::Sender<(usize, usize)>>,
+) -> Vec<Result<Vec<FileAnalysis>, String>> {
+    use futures::stream::{FuturesUnordered, StreamExt};
+
+    let semaphore = Arc::new(Semaphore::new(max_concurrent));
+    let api_key = Arc::new(api_key);
+    let total_batches = batches.len();
+
+    // Create SHARED HTTP client (reuses connections, avoids TLS overhead)
+    let shared_client = Arc::new(
+        Client::builder()
+            .timeout(Duration::from_secs(60))
+            .pool_max_idle_per_host(max_concurrent)
+            .build()
+            .expect("Failed to create HTTP client")
+    );
+
+    // Use FuturesUnordered to process results as they complete
+    let mut futures = FuturesUnordered::new();
+
+    for (batch_id, batch) in batches.into_iter().enumerate() {
+        let sem = Arc::clone(&semaphore);
+        let key = Arc::clone(&api_key);
+        let client = Arc::clone(&shared_client);
+        let file_count = batch.len();
+
+        futures.push(tokio::spawn(async move {
+            // Acquire semaphore permit
+            let _permit = sem.acquire().await.expect("Semaphore closed");
+
+            eprintln!("[OpenAI Worker {}] Processing batch of {} files", batch_id, file_count);
+
+            let result = analyze_batch_with_client(&client, &key, batch).await;
+
+            match &result {
+                Ok(analyses) => {
+                    eprintln!("[OpenAI Worker {}] Completed: {} files analyzed", batch_id, analyses.len());
+                }
+                Err(e) => {
+                    eprintln!("[OpenAI Worker {}] Failed: {}", batch_id, e);
+                }
+            }
+
+            // Minimal delay (10ms) for rate limiting
+            tokio::time::sleep(Duration::from_millis(10)).await;
+
+            (batch_id, file_count, result)
+        }));
     }
 
-    /// Analyze a batch of files
-    pub async fn analyze_batch(&self, files: Vec<FileContent>) -> Result<Vec<FileAnalysis>, String> {
-        if files.is_empty() {
-            return Ok(vec![]);
+    // Collect results as they complete and emit progress
+    let mut results: Vec<Option<Result<Vec<FileAnalysis>, String>>> = vec![None; total_batches];
+    let mut completed = 0;
+    let mut files_analyzed = 0;
+
+    while let Some(task_result) = futures.next().await {
+        match task_result {
+            Ok((batch_id, file_count, result)) => {
+                files_analyzed += file_count;
+                results[batch_id] = Some(result);
+            }
+            Err(e) => {
+                eprintln!("[OpenAI] Task join error: {}", e);
+                // Find first empty slot for error
+                if let Some(slot) = results.iter_mut().find(|r| r.is_none()) {
+                    *slot = Some(Err(format!("Worker task failed: {}", e)));
+                }
+            }
+        }
+        completed += 1;
+
+        // Send progress update
+        if let Some(ref sender) = progress_sender {
+            let _ = sender.send((completed, total_batches)).await;
         }
 
-        // Build prompt with all files in batch
-        let file_contents = files
-            .iter()
-            .map(|f| {
-                format!(
-                    "=== FILE: {} ===\nExtension: {}\nContent:\n{}\n",
-                    f.filename,
-                    f.extension,
-                    // Limit content per file to ~1000 chars to stay within GPT-5-nano context
-                    if f.content.len() > 1000 {
-                        format!("{}...[truncated]", &f.content[..1000])
-                    } else {
-                        f.content.clone()
-                    }
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        eprintln!("[OpenAI] Progress: {}/{} batches complete ({} files)", completed, total_batches, files_analyzed);
+    }
 
-        let prompt = format!(
-            r#"Analyze these documents and return a JSON array with one object per file.
+    // Unwrap results (all should be Some now)
+    results.into_iter().map(|r| r.unwrap_or_else(|| Err("Missing result".to_string()))).collect()
+}
+
+/// Analyze a batch using a shared HTTP client (avoids creating new clients per batch)
+async fn analyze_batch_with_client(
+    client: &Client,
+    api_key: &str,
+    files: Vec<FileContent>,
+) -> Result<Vec<FileAnalysis>, String> {
+    if files.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let model = "gpt-5-nano-2025-08-07";  // Fast, cheap model for batch analysis
+
+    // Build prompt with all files in batch
+    let file_contents = files
+        .iter()
+        .map(|f| {
+            format!(
+                "=== FILE: {} ===\nExtension: {}\nContent:\n{}\n",
+                f.filename,
+                f.extension,
+                if f.content.len() > 1000 {
+                    format!("{}...[truncated]", &f.content[..1000])
+                } else {
+                    f.content.clone()
+                }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let prompt = format!(
+        r#"Analyze these documents and return a JSON array with one object per file.
 
 [
   {{
@@ -136,186 +238,115 @@ FILES TO ANALYZE:
 {}
 
 Return ONLY the JSON array, no other text."#,
-            file_contents
-        );
+        file_contents
+    );
 
-        // Call OpenAI API
-        let response = self
-            .client
-            .post("https://api.openai.com/v1/chat/completions")
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&serde_json::json!({
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": "You are a document analysis assistant. Respond only with valid JSON arrays."},
-                    {"role": "user", "content": prompt}
-                ],
-                "max_completion_tokens": 25000
-            }))
-            .send()
-            .await
-            .map_err(|e| format!("OpenAI API request failed: {}", e))?;
+    // Call OpenAI API using shared client with timeout
+    eprintln!("[OpenAI] Sending request for {} files to model {}", files.len(), model);
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await.unwrap_or_default();
-            return Err(format!("OpenAI API error ({}): {}", status, text));
+    let request_future = client
+        .post("https://api.openai.com/v1/chat/completions")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "You are a document analysis assistant. Respond only with valid JSON arrays."},
+                {"role": "user", "content": prompt}
+            ],
+            "max_completion_tokens": 25000
+        }))
+        .send();
+
+    // Wrap in timeout to prevent indefinite hang
+    let response = match tokio::time::timeout(Duration::from_secs(90), request_future).await {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(e)) => {
+            eprintln!("[OpenAI] Request error: {}", e);
+            return Err(format!("OpenAI API request failed: {}", e));
         }
-
-        #[derive(Deserialize, Debug)]
-        struct OpenAIResponse {
-            choices: Vec<Choice>,
+        Err(_) => {
+            eprintln!("[OpenAI] Request TIMEOUT after 90 seconds");
+            return Err("OpenAI API request timed out after 90 seconds".to_string());
         }
-        #[derive(Deserialize, Debug)]
-        struct Choice {
-            message: Message,
-            finish_reason: Option<String>,
-        }
-        #[derive(Deserialize, Debug)]
-        struct Message {
-            role: String,
-            content: Option<String>,
-        }
+    };
 
-        let response_text = response.text().await
-            .map_err(|e| format!("Failed to read OpenAI response: {}", e))?;
+    eprintln!("[OpenAI] Got response with status: {}", response.status());
 
-        tracing::debug!("[OpenAI] Raw response: {}", &response_text[..response_text.len().min(1000)]);
-
-        let api_response: OpenAIResponse = serde_json::from_str(&response_text)
-            .map_err(|e| format!("Failed to parse OpenAI response: {}. Raw: {}", e, &response_text[..response_text.len().min(500)]))?;
-
-        let first_choice = api_response.choices.first();
-        let finish_reason = first_choice.and_then(|c| c.finish_reason.clone()).unwrap_or_default();
-
-        let content = first_choice
-            .and_then(|c| c.message.content.clone())
-            .ok_or_else(|| {
-                format!("No response from OpenAI. finish_reason={}, choices: {:?}",
-                    finish_reason,
-                    first_choice.map(|c| format!("role={}", c.message.role)))
-            })?;
-
-        if content.trim().is_empty() {
-            return Err(format!("OpenAI returned empty content. finish_reason={}", finish_reason));
-        }
-
-        tracing::debug!("[OpenAI] Response content: {}", &content[..content.len().min(500)]);
-
-        // Parse JSON response
-        let json_str = extract_json_array(&content)
-            .map_err(|e| format!("Failed to extract JSON array: {}. Content preview: {}", e, &content[..content.len().min(200)]))?;
-        let mut analyses: Vec<FileAnalysis> = serde_json::from_str(&json_str)
-            .map_err(|e| format!("Failed to parse analysis JSON: {}. Content: {}", e, content))?;
-
-        // Ensure file_path is set correctly from our input
-        for (analysis, file) in analyses.iter_mut().zip(files.iter()) {
-            analysis.file_path = file.path.to_string_lossy().to_string();
-            // Ensure old_name matches what we sent
-            if analysis.old_name.is_empty() {
-                analysis.old_name = file.filename.clone();
-            }
-        }
-
-        Ok(analyses)
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        eprintln!("[OpenAI] API error: {} - {}", status, text);
+        return Err(format!("OpenAI API error ({}): {}", status, text));
     }
-}
 
-/// Calculate optimal worker count based on file count
-pub fn calculate_worker_count(file_count: usize) -> usize {
-    match file_count {
-        0..=10 => 4,
-        11..=25 => 8,
-        26..=50 => 16,
-        51..=100 => 24,
-        _ => 32,
+    #[derive(serde::Deserialize, Debug)]
+    struct OpenAIResponse {
+        choices: Vec<Choice>,
     }
-}
+    #[derive(serde::Deserialize, Debug)]
+    struct Choice {
+        message: Message,
+        #[allow(dead_code)] // Required for JSON deserialization but value not used
+        finish_reason: Option<String>,
+    }
+    #[derive(serde::Deserialize, Debug)]
+    struct Message {
+        content: Option<String>,
+    }
 
-/// Split files into batches for workers
-pub fn create_file_batches(files: Vec<FileContent>, batch_size: usize) -> Vec<Vec<FileContent>> {
-    files
-        .chunks(batch_size)
-        .map(|chunk| chunk.to_vec())
-        .collect()
-}
+    let response_text = response.text().await
+        .map_err(|e| format!("Failed to read OpenAI response: {}", e))?;
 
-/// Run multiple workers in parallel with rate limiting
-pub async fn run_parallel_workers(
-    api_key: String,
-    batches: Vec<Vec<FileContent>>,
-    max_concurrent: usize,
-) -> Vec<Result<Vec<FileAnalysis>, String>> {
-    let semaphore = Arc::new(Semaphore::new(max_concurrent));
-    let api_key = Arc::new(api_key);
+    let api_response: OpenAIResponse = serde_json::from_str(&response_text)
+        .map_err(|e| format!("Failed to parse OpenAI response: {}", e))?;
 
-    let tasks: Vec<_> = batches
-        .into_iter()
-        .enumerate()
-        .map(|(batch_id, batch)| {
-            let sem = Arc::clone(&semaphore);
-            let key = Arc::clone(&api_key);
+    let content = api_response.choices.first()
+        .and_then(|c| c.message.content.clone())
+        .ok_or_else(|| "No response from OpenAI".to_string())?;
 
-            tokio::spawn(async move {
-                // Acquire semaphore permit
-                let _permit = sem.acquire().await.expect("Semaphore closed");
+    if content.trim().is_empty() {
+        return Err("OpenAI returned empty content".to_string());
+    }
 
-                tracing::info!(
-                    "[OpenAI Worker {}] Processing batch of {} files",
-                    batch_id,
-                    batch.len()
-                );
+    // Parse JSON response
+    let json_str = super::utils::extract_json_array(&content)
+        .map_err(|e| format!("Failed to extract JSON array: {}", e))?;
+    let mut analyses: Vec<FileAnalysis> = serde_json::from_str(&json_str)
+        .map_err(|e| format!("Failed to parse analysis JSON: {}", e))?;
 
-                let worker = OpenAIWorker::new((*key).clone());
-                let result = worker.analyze_batch(batch).await;
-
-                match &result {
-                    Ok(analyses) => {
-                        tracing::info!(
-                            "[OpenAI Worker {}] Completed: {} files analyzed",
-                            batch_id,
-                            analyses.len()
-                        );
-                    }
-                    Err(e) => {
-                        tracing::error!("[OpenAI Worker {}] Failed: {}", batch_id, e);
-                    }
-                }
-
-                // Rate limiting: minimal delay between batches for faster throughput
-                tokio::time::sleep(Duration::from_millis(50)).await;
-
-                result
-            })
-        })
-        .collect();
-
-    // Collect results
-    let mut results = Vec::new();
-    for task in tasks {
-        match task.await {
-            Ok(result) => results.push(result),
-            Err(e) => results.push(Err(format!("Worker task failed: {}", e))),
+    // Ensure file_path is set correctly from our input
+    for (analysis, file) in analyses.iter_mut().zip(files.iter()) {
+        analysis.file_path = file.path.to_string_lossy().to_string();
+        if analysis.old_name.is_empty() {
+            analysis.old_name = file.filename.clone();
         }
     }
 
-    results
+    Ok(analyses)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::utils::extract_json_array;
 
     #[test]
     fn test_calculate_worker_count() {
-        assert_eq!(calculate_worker_count(5), 4);
-        assert_eq!(calculate_worker_count(10), 4);
-        assert_eq!(calculate_worker_count(15), 8);
-        assert_eq!(calculate_worker_count(25), 8);
-        assert_eq!(calculate_worker_count(30), 16);
-        assert_eq!(calculate_worker_count(75), 24);
-        assert_eq!(calculate_worker_count(150), 32);
+        // 0..=10 => 8 workers
+        assert_eq!(calculate_worker_count(5), 8);
+        assert_eq!(calculate_worker_count(10), 8);
+        // 11..=25 => 16 workers
+        assert_eq!(calculate_worker_count(15), 16);
+        assert_eq!(calculate_worker_count(25), 16);
+        // 26..=50 => 32 workers
+        assert_eq!(calculate_worker_count(30), 32);
+        assert_eq!(calculate_worker_count(50), 32);
+        // 51..=100 => 48 workers
+        assert_eq!(calculate_worker_count(75), 48);
+        assert_eq!(calculate_worker_count(100), 48);
+        // >100 => 64 workers
+        assert_eq!(calculate_worker_count(150), 64);
     }
 
     #[test]

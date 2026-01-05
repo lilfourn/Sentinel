@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, memo } from 'react';
 import { ChevronDown, ChevronRight, Loader2, CheckCircle, AlertCircle, Search, FileText, FolderOpen, List, Terminal, ShieldCheck, ShieldAlert } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import type { ThoughtStep } from '../../stores/chat-store';
@@ -47,7 +47,10 @@ function StatusIcon({ status }: { status: ThoughtStep['status'] }) {
   }
 }
 
-function ThoughtItem({ thought }: { thought: ThoughtStep }) {
+/**
+ * Memoized thought item - prevents re-renders when parent accordion toggles
+ */
+const ThoughtItem = memo(function ThoughtItem({ thought }: { thought: ThoughtStep }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [approvalState, setApprovalState] = useState<'idle' | 'approving' | 'approved' | 'denied'>('idle');
   const hasOutput = thought.output && thought.output.length > 0;
@@ -174,7 +177,7 @@ function ThoughtItem({ thought }: { thought: ThoughtStep }) {
       )}
     </div>
   );
-}
+});
 
 export function ThoughtAccordion({ thoughts }: ThoughtAccordionProps) {
   const [isCollapsed, setIsCollapsed] = useState(false);

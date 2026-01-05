@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import {
   File,
   FileText,
@@ -67,7 +68,12 @@ function getFileIcon(entry: FileEntry): LucideIcon | null {
   return fileTypeIcons[fileType] || File;
 }
 
-export function FileRow({
+/**
+ * Memoized FileRow component - only re-renders when data props change.
+ * Callbacks are excluded from comparison since they're recreated on each parent render
+ * but the underlying behavior is stable.
+ */
+export const FileRow = memo(function FileRow({
   entry,
   isSelected,
   isFocused,
@@ -196,4 +202,21 @@ export function FileRow({
       )}
     </div>
   );
-}
+}, (prevProps, nextProps) => {
+  // Custom comparison - only re-render when data props change
+  // Callbacks are excluded since they're recreated but stable in behavior
+  return (
+    prevProps.entry.path === nextProps.entry.path &&
+    prevProps.entry.name === nextProps.entry.name &&
+    prevProps.entry.modifiedAt === nextProps.entry.modifiedAt &&
+    prevProps.entry.size === nextProps.entry.size &&
+    prevProps.isSelected === nextProps.isSelected &&
+    prevProps.isFocused === nextProps.isFocused &&
+    prevProps.isEditing === nextProps.isEditing &&
+    prevProps.isDragTarget === nextProps.isDragTarget &&
+    prevProps.isValidDropTarget === nextProps.isValidDropTarget &&
+    prevProps.ghostState === nextProps.ghostState &&
+    prevProps.linkedPath === nextProps.linkedPath &&
+    prevProps.style?.transform === nextProps.style?.transform
+  );
+});

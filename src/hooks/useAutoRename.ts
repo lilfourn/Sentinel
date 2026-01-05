@@ -1,8 +1,9 @@
 import { useEffect, useCallback, useRef } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen, emit } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { showRenameToast, showError } from '../stores/toast-store';
 import { useDownloadsWatcherStore, selectRuleByMatch, selectFolderByPath } from '../stores/downloads-watcher-store';
+import { useSubscriptionStore } from '../stores/subscription-store';
 
 interface FileCreatedEvent {
   id: string;
@@ -65,8 +66,12 @@ export function useAutoRename(enabled: boolean) {
         ? matchingRule.transformValue
         : undefined;
 
+      // Get userId for billing checks
+      const userId = useSubscriptionStore.getState().userId;
+
       // Get rename suggestion from AI
       const suggestion = await invoke<RenameSuggestion>('get_rename_suggestion', {
+        userId,
         path: event.path,
         filename: event.fileName,
         extension: event.extension,
@@ -99,6 +104,16 @@ export function useAutoRename(enabled: boolean) {
           newName: suggestion.suggestedName,
           folderId,
           folderName,
+        });
+
+        // Emit event for UsageSync to record in Convex
+        emit('usage:record-rename', {
+          originalName: suggestion.originalName,
+          newName: suggestion.suggestedName,
+          filePath: event.path,
+          fileSize: event.size,
+          mimeType: event.extension ? `application/${event.extension}` : undefined,
+          aiModel: 'haiku', // Auto-rename uses Haiku
         });
 
         // Show toast with undo option

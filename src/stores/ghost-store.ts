@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { GhostState, GhostStateMap } from '../types/ghost';
-import type { OrganizePlan } from './organize-store';
+import type { OrganizePlan } from './organize/plan-store';
 
 interface GhostRenderState {
   /** Map of file paths to their ghost rendering state */
@@ -9,6 +9,8 @@ interface GhostRenderState {
   activeAnimations: Set<string>;
   /** Whether ghost rendering is enabled */
   showGhosts: boolean;
+  /** Track active animation timeouts for cleanup */
+  _animationTimeouts: Map<string, ReturnType<typeof setTimeout>>;
 }
 
 interface GhostRenderActions {
@@ -46,6 +48,7 @@ export const useGhostStore = create<GhostRenderState & GhostRenderActions>((set,
   ghostMap: new Map(),
   activeAnimations: new Set(),
   showGhosts: true,
+  _animationTimeouts: new Map(),
 
   setGhostState: (path, state, metadata = {}) => {
     set((prev) => {
@@ -166,14 +169,23 @@ export const useGhostStore = create<GhostRenderState & GhostRenderActions>((set,
   },
 
   reset: () => {
+    // Clear all pending animation timeouts to prevent memory leaks
+    const { _animationTimeouts } = get();
+    for (const timeoutId of _animationTimeouts.values()) {
+      clearTimeout(timeoutId);
+    }
+
     set({
       ghostMap: new Map(),
       activeAnimations: new Set(),
       showGhosts: true,
+      _animationTimeouts: new Map(),
     });
   },
 
   markOperationCompleted: (operationId) => {
+    const pathsToAnimate: string[] = [];
+
     set((prev) => {
       const newMap = new Map(prev.ghostMap);
       const newAnimations = new Set(prev.activeAnimations);
@@ -184,11 +196,7 @@ export const useGhostStore = create<GhostRenderState & GhostRenderActions>((set,
           // Change state to completed and add to active animations
           newMap.set(path, { ...metadata, state: 'completed' });
           newAnimations.add(path);
-
-          // Schedule cleanup after animation completes
-          setTimeout(() => {
-            get().completeAnimation(path);
-          }, 400); // Match animation duration
+          pathsToAnimate.push(path);
         }
       }
 
@@ -197,5 +205,42 @@ export const useGhostStore = create<GhostRenderState & GhostRenderActions>((set,
         activeAnimations: newAnimations,
       };
     });
+
+    // Schedule cleanup after animation completes (outside of set() to avoid nested calls)
+    const ANIMATION_DURATION_MS = 400;
+    for (const path of pathsToAnimate) {
+      // Cancel any existing timeout for this path to prevent duplicate callbacks
+      const existingTimeout = get()._animationTimeouts.get(path);
+      if (existingTimeout) {
+        clearTimeout(existingTimeout);
+      }
+
+      const timeoutId = setTimeout(() => {
+        // Guard: verify path is still tracked (store may have been reset)
+        const currentState = get();
+        const trackedTimeout = currentState._animationTimeouts.get(path);
+
+        // Only proceed if this timeout is still the active one for this path
+        // and the path still exists in the ghost map
+        if (trackedTimeout !== timeoutId || !currentState.ghostMap.has(path)) {
+          return;
+        }
+
+        // Clean up timeout tracking and complete animation
+        set((prev) => {
+          const newTimeouts = new Map(prev._animationTimeouts);
+          newTimeouts.delete(path);
+          return { _animationTimeouts: newTimeouts };
+        });
+        get().completeAnimation(path);
+      }, ANIMATION_DURATION_MS);
+
+      // Track the timeout for cleanup on reset
+      set((prev) => {
+        const newTimeouts = new Map(prev._animationTimeouts);
+        newTimeouts.set(path, timeoutId);
+        return { _animationTimeouts: newTimeouts };
+      });
+    }
   },
 }));

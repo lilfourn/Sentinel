@@ -4,7 +4,7 @@
 //! - chat_stream: Run chat agent with streaming responses
 //! - list_files_for_mention: Get files for @ mention autocomplete
 
-use crate::ai::chat::{run_chat_agent, ContextItem, ConversationMessage};
+use crate::ai::chat::{run_chat_agent, ChatAgentResult, ContextItem, ConversationMessage};
 use crate::billing::{BillingState, LimitCheckResult};
 use crate::security::PathValidator;
 use serde::{Deserialize, Serialize};
@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
+use tracing::{debug, info, warn};
 
 /// Global abort flag for chat operations
 pub struct ChatAbortFlag(pub Arc<AtomicBool>);
@@ -75,10 +76,12 @@ pub async fn chat_stream(
     billing: State<'_, BillingState>,
     request: ChatStreamRequest,
 ) -> Result<ChatStreamResponse, String> {
-    eprintln!("[ChatCommand] Starting chat_stream");
-    eprintln!("[ChatCommand] Model: {}", request.model);
-    eprintln!("[ChatCommand] Context items: {}", request.context_items.len());
-    eprintln!("[ChatCommand] History length: {}", request.history.len());
+    info!(
+        model = request.model,
+        context_items = request.context_items.len(),
+        history_len = request.history.len(),
+        "Starting chat stream"
+    );
 
     // Reset abort flag at start of new chat
     abort_flag.0.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -106,7 +109,7 @@ pub async fn chat_stream(
         match limit_result {
             LimitCheckResult::Denied { reason, upgrade_url } => {
                 let error_message = reason.to_string();
-                eprintln!("[ChatCommand] Limit denied: {}", error_message);
+                info!(reason = %error_message, "Chat limit denied");
 
                 // Emit limit error event
                 let _ = app.emit(
@@ -124,14 +127,11 @@ pub async fn chat_stream(
                 });
             }
             LimitCheckResult::Allowed { remaining } => {
-                eprintln!(
-                    "[ChatCommand] Limit check passed, {} requests remaining",
-                    remaining
-                );
+                debug!(remaining = remaining, "Limit check passed");
             }
         }
     } else {
-        eprintln!("[ChatCommand] No user_id provided, skipping billing check");
+        debug!("No user_id provided, skipping billing check");
     }
     // === END BILLING CHECK ===
 
@@ -149,24 +149,25 @@ pub async fn chat_stream(
     )
     .await
     {
-        Ok(response) => {
-            eprintln!("[ChatCommand] Chat completed successfully");
+        Ok(ChatAgentResult { response, usage }) => {
+            info!(
+                input_tokens = usage.input_tokens,
+                output_tokens = usage.output_tokens,
+                cache_created = usage.cache_creation_input_tokens,
+                cache_read = usage.cache_read_input_tokens,
+                "Chat completed successfully"
+            );
 
-            // === BILLING: Record usage on success ===
+            // === BILLING: Record usage on success with ACCURATE token counts ===
             if let Some(ref user_id) = request.user_id {
-                // TODO: Extract actual token counts from response
-                // For now, use estimates based on response length
-                let input_tokens = (request.message.len() / 4) as u64;
-                let output_tokens = (response.len() / 4) as u64;
-
                 if let Err(e) = billing.usage_tracker.increment_request(
                     user_id,
                     model_id,
                     request.extended_thinking,
-                    input_tokens,
-                    output_tokens,
+                    usage.input_tokens,
+                    usage.output_tokens,
                 ) {
-                    eprintln!("[ChatCommand] Failed to record usage: {}", e);
+                    warn!(error = %e, "Failed to record usage");
                 }
             }
             // === END BILLING RECORD ===
@@ -178,7 +179,7 @@ pub async fn chat_stream(
             })
         }
         Err(e) => {
-            eprintln!("[ChatCommand] Chat failed: {}", e);
+            warn!(error = %e, "Chat failed");
             // Emit error event
             let _ = app.emit("chat:error", serde_json::json!({ "message": e }));
             Ok(ChatStreamResponse {
@@ -193,7 +194,7 @@ pub async fn chat_stream(
 /// Abort the current chat operation
 #[tauri::command]
 pub fn abort_chat(abort_flag: State<ChatAbortFlag>) -> Result<(), String> {
-    eprintln!("[ChatCommand] Aborting chat");
+    info!("Chat abort requested");
     abort_flag.0.store(true, Ordering::SeqCst);
     Ok(())
 }
@@ -223,7 +224,7 @@ pub async fn list_files_for_mention(
     max_results: Option<usize>,
     recursive: Option<bool>,
 ) -> Result<Vec<MentionFile>, String> {
-    eprintln!("[ChatCommand] list_files_for_mention: {} (recursive: {:?})", directory, recursive);
+    debug!(directory = directory, recursive = ?recursive, "Listing files for mention");
 
     let dir_path = PathBuf::from(&directory);
 
@@ -241,9 +242,12 @@ pub async fn list_files_for_mention(
     // Limit recursive depth - search deeper when user provides a query
     let max_depth = if do_recursive && query_lower.is_some() { 5 } else { 1 };
 
-    eprintln!(
-        "[ChatCommand] Search params: max={}, recursive={}, max_depth={}, query={:?}",
-        max, do_recursive, max_depth, query_lower
+    debug!(
+        max = max,
+        recursive = do_recursive,
+        max_depth = max_depth,
+        query = ?query_lower,
+        "Search params"
     );
 
     let mut results: Vec<MentionFile> = Vec::new();

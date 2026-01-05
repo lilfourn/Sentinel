@@ -2,11 +2,15 @@
 //!
 //! Tracks daily API usage per model with atomic increments.
 //! Data persists locally and can be synced with Convex.
+//!
+//! Note: Daily boundaries are based on user's local time, not UTC.
+//! This provides a more intuitive experience where limits reset at local midnight.
 
-use chrono::Utc;
+use chrono::{Local, Utc};
 use rusqlite::{params, Connection};
 use std::path::PathBuf;
 use std::sync::Mutex;
+use tracing::debug;
 
 use super::types::DailyUsage;
 
@@ -41,6 +45,8 @@ impl UsageTracker {
                 extended_thinking_requests INTEGER DEFAULT 0,
                 total_input_tokens INTEGER DEFAULT 0,
                 total_output_tokens INTEGER DEFAULT 0,
+                organize_requests INTEGER DEFAULT 0,
+                rename_requests INTEGER DEFAULT 0,
                 PRIMARY KEY (user_id, date)
             );
 
@@ -49,6 +55,16 @@ impl UsageTracker {
         "#,
         )
         .map_err(|e| format!("Failed to create tables: {}", e))?;
+
+        // Migration: Add organize_requests and rename_requests columns if they don't exist
+        let _ = conn.execute(
+            "ALTER TABLE daily_usage ADD COLUMN organize_requests INTEGER DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE daily_usage ADD COLUMN rename_requests INTEGER DEFAULT 0",
+            [],
+        );
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -61,19 +77,21 @@ impl UsageTracker {
             .ok_or_else(|| "Could not determine config directory".to_string())
     }
 
-    /// Get today's UTC date string
-    fn today_utc() -> String {
-        Utc::now().format("%Y-%m-%d").to_string()
+    /// Get today's date string in user's local timezone
+    /// This ensures daily limits reset at local midnight, not UTC midnight
+    fn today_local() -> String {
+        Local::now().format("%Y-%m-%d").to_string()
     }
 
     /// Get usage for today
     pub fn get_today_usage(&self, user_id: &str) -> Result<DailyUsage, String> {
         let conn = self.conn.lock().unwrap();
-        let today = Self::today_utc();
+        let today = Self::today_local();
 
         let result = conn.query_row(
             "SELECT date, haiku_requests, sonnet_requests, opus_requests,
-                    extended_thinking_requests, total_input_tokens, total_output_tokens
+                    extended_thinking_requests, total_input_tokens, total_output_tokens,
+                    COALESCE(organize_requests, 0), COALESCE(rename_requests, 0)
              FROM daily_usage WHERE user_id = ? AND date = ?",
             params![user_id, today],
             |row| {
@@ -85,6 +103,8 @@ impl UsageTracker {
                     extended_thinking_requests: row.get(4)?,
                     total_input_tokens: row.get(5)?,
                     total_output_tokens: row.get(6)?,
+                    organize_requests: row.get(7)?,
+                    rename_requests: row.get(8)?,
                 })
             },
         );
@@ -109,7 +129,7 @@ impl UsageTracker {
         output_tokens: u64,
     ) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
-        let today = Self::today_utc();
+        let today = Self::today_local();
 
         // Determine which column to increment
         let model_column = if model.contains("haiku") {
@@ -145,9 +165,11 @@ impl UsageTracker {
         )
         .map_err(|e| format!("Failed to increment usage: {}", e))?;
 
-        eprintln!(
-            "[UsageTracker] Incremented {} for user {} (thinking: {})",
-            model_column, user_id, extended_thinking
+        debug!(
+            model = model_column,
+            user = user_id,
+            thinking = extended_thinking,
+            "Incremented usage"
         );
 
         Ok(())
@@ -156,13 +178,14 @@ impl UsageTracker {
     /// Get usage history for the current month
     pub fn get_month_usage(&self, user_id: &str) -> Result<Vec<DailyUsage>, String> {
         let conn = self.conn.lock().unwrap();
-        let now = Utc::now();
+        let now = Local::now();
         let month_start = format!("{}-{:02}-01", now.year(), now.month());
 
         let mut stmt = conn
             .prepare(
                 "SELECT date, haiku_requests, sonnet_requests, opus_requests,
-                    extended_thinking_requests, total_input_tokens, total_output_tokens
+                    extended_thinking_requests, total_input_tokens, total_output_tokens,
+                    COALESCE(organize_requests, 0), COALESCE(rename_requests, 0)
              FROM daily_usage
              WHERE user_id = ? AND date >= ?
              ORDER BY date ASC",
@@ -179,6 +202,8 @@ impl UsageTracker {
                     extended_thinking_requests: row.get(4)?,
                     total_input_tokens: row.get(5)?,
                     total_output_tokens: row.get(6)?,
+                    organize_requests: row.get(7)?,
+                    rename_requests: row.get(8)?,
                 })
             })
             .map_err(|e| format!("Query failed: {}", e))?;
@@ -188,12 +213,52 @@ impl UsageTracker {
             .map_err(|e| format!("Failed to collect results: {}", e))
     }
 
+    /// Increment organize request counter atomically
+    pub fn increment_organize(&self, user_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let today = Self::today_local();
+
+        conn.execute(
+            r#"
+            INSERT INTO daily_usage (user_id, date, organize_requests)
+            VALUES (?1, ?2, 1)
+            ON CONFLICT(user_id, date) DO UPDATE SET
+                organize_requests = organize_requests + 1
+            "#,
+            params![user_id, today],
+        )
+        .map_err(|e| format!("Failed to increment organize usage: {}", e))?;
+
+        debug!(user = user_id, "Incremented organize_requests");
+        Ok(())
+    }
+
+    /// Increment rename request counter atomically
+    pub fn increment_rename(&self, user_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let today = Self::today_local();
+
+        conn.execute(
+            r#"
+            INSERT INTO daily_usage (user_id, date, rename_requests)
+            VALUES (?1, ?2, 1)
+            ON CONFLICT(user_id, date) DO UPDATE SET
+                rename_requests = rename_requests + 1
+            "#,
+            params![user_id, today],
+        )
+        .map_err(|e| format!("Failed to increment rename usage: {}", e))?;
+
+        debug!(user = user_id, "Incremented rename_requests");
+        Ok(())
+    }
+
     /// Get total token usage for the current month
     ///
     /// Returns (total_input_tokens, total_output_tokens)
     pub fn get_monthly_token_totals(&self, user_id: &str) -> Result<(u64, u64), String> {
         let conn = self.conn.lock().unwrap();
-        let now = Utc::now();
+        let now = Local::now();
         let month_start = format!("{}-{:02}-01", now.year(), now.month());
 
         let result = conn.query_row(

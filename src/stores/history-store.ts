@@ -23,6 +23,11 @@ interface HistoryState {
   isLoading: boolean;
   error: string | null;
 
+  // Quick indicator for toolbar badge
+  indicatorFolder: string | null;
+  indicatorHasHistory: boolean;
+  indicatorSessionCount: number;
+
   // Undo modal state
   isUndoModalOpen: boolean;
   targetSessionId: string | null;
@@ -43,6 +48,9 @@ interface HistoryActions {
 
   // Check if folder has history
   hasHistory: (folderPath: string) => Promise<boolean>;
+
+  // Quick check for toolbar indicator (non-blocking, cached)
+  checkFolderIndicator: (folderPath: string) => void;
 
   // Undo modal actions
   openUndoModal: (sessionId: string) => void;
@@ -67,6 +75,9 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
   sessions: [],
   isLoading: false,
   error: null,
+  indicatorFolder: null,
+  indicatorHasHistory: false,
+  indicatorSessionCount: 0,
   isUndoModalOpen: false,
   targetSessionId: null,
   targetSession: null,
@@ -118,6 +129,39 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     } catch {
       return false;
     }
+  },
+
+  // Quick non-blocking check for toolbar indicator
+  checkFolderIndicator: (folderPath: string) => {
+    const { indicatorFolder } = get();
+
+    // Skip if same folder already checked
+    if (indicatorFolder === folderPath) return;
+
+    // Reset indicator while checking
+    set({
+      indicatorFolder: folderPath,
+      indicatorHasHistory: false,
+      indicatorSessionCount: 0,
+    });
+
+    // Async check - updates state when done
+    invoke<HistorySummary | null>('history_get_summary', { folderPath })
+      .then((summary) => {
+        // Only update if still on the same folder
+        if (get().indicatorFolder === folderPath) {
+          set({
+            indicatorHasHistory: summary !== null && summary.sessionCount > 0,
+            indicatorSessionCount: summary?.sessionCount ?? 0,
+          });
+        }
+      })
+      .catch(() => {
+        // Silently fail - indicator just won't show
+        if (get().indicatorFolder === folderPath) {
+          set({ indicatorHasHistory: false, indicatorSessionCount: 0 });
+        }
+      });
   },
 
   // Open undo modal for a session

@@ -8,12 +8,17 @@ import { SelectionOverlay } from './SelectionOverlay';
 import { ContextMenu, buildFileContextMenuItems, buildBackgroundContextMenuItems, type ContextMenuPosition } from '../ContextMenu/ContextMenu';
 import { ConfirmDialog } from '../dialogs/ConfirmDialog';
 import { ICloudErrorDialog } from '../dialogs/ICloudErrorDialog';
+import { AIRenameDialog } from '../dialogs/AIRenameDialog';
+import { BatchRenameDialog } from '../dialogs/BatchRenameDialog';
 import { useDragDropContext } from '../drag-drop';
 import { useNavigationStore } from '../../stores/navigation-store';
 import { useSelectionStore } from '../../stores/selection-store';
 import { useOrganizeStore } from '../../stores/organize-store';
 import { useDelete } from '../../hooks/useDelete';
 import { useNativeDrag } from '../../hooks/useNativeDrag';
+import { useAIRename } from '../../hooks/useAIRename';
+import { useBatchRename } from '../../hooks/useBatchRename';
+import { useSubscriptionStore } from '../../stores/subscription-store';
 import { createDragGhost } from '../../lib/drag-visuals';
 import { openFile } from '../../lib/utils';
 import type { FileEntry } from '../../types/file';
@@ -49,6 +54,7 @@ export function FileListView({ entries }: FileListViewProps) {
     stopCreating,
   } = useSelectionStore();
   const { startOrganize } = useOrganizeStore();
+  const userId = useSubscriptionStore((s) => s.userId);
   const {
     dropTarget,
     startDrag,
@@ -98,6 +104,10 @@ export function FileListView({ entries }: FileListViewProps) {
   const refreshDirectory = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['directory', currentPath, showHidden] });
   }, [queryClient, currentPath, showHidden]);
+
+  // AI Rename functionality
+  const aiRename = useAIRename(refreshDirectory);
+  const batchRename = useBatchRename(refreshDirectory);
 
   // Delete with confirmation and iCloud error handling
   const {
@@ -656,6 +666,12 @@ export function FileListView({ entries }: FileListViewProps) {
               onOrganizeWithAI: () => {
                 startOrganize(contextMenu.entry.path);
               },
+              onAIRename: !contextMenu.entry.isDirectory && userId
+                ? () => aiRename.request(contextMenu.entry)
+                : undefined,
+              onAIBatchRename: contextMenu.entry.isDirectory && userId
+                ? () => batchRename.request(contextMenu.entry)
+                : undefined,
               onRename: () => {
                 startEditing(contextMenu.entry.path);
               },
@@ -703,6 +719,33 @@ export function FileListView({ entries }: FileListViewProps) {
         fileName={iCloudFileName || ''}
         onClose={closeICloudError}
         onUseQuarantine={useQuarantineFallback}
+      />
+
+      {/* AI Rename Dialog (single file) */}
+      <AIRenameDialog
+        isOpen={aiRename.isOpen}
+        isLoading={aiRename.isLoading}
+        originalName={aiRename.entry?.name || ''}
+        suggestedName={aiRename.suggestion?.suggestedName || null}
+        error={aiRename.error}
+        onConfirm={aiRename.apply}
+        onCancel={aiRename.cancel}
+        onRetry={aiRename.retry}
+      />
+
+      {/* Batch Rename Dialog (folder) */}
+      <BatchRenameDialog
+        isOpen={batchRename.isOpen}
+        isLoading={batchRename.isLoading}
+        isApplying={batchRename.isApplying}
+        folderName={batchRename.entry?.name || ''}
+        suggestions={batchRename.suggestions}
+        progress={batchRename.progress}
+        error={batchRename.error}
+        onConfirm={batchRename.apply}
+        onCancel={batchRename.cancel}
+        onToggleSelection={batchRename.toggleSelection}
+        onSelectAll={batchRename.selectAll}
       />
     </div>
   );

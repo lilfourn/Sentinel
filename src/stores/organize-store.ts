@@ -1,31 +1,34 @@
 import { create } from 'zustand';
+import { useShallow } from 'zustand/react/shallow';
 import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type { OperationStatus, WalEntry, WalRecoveryInfo, WalRecoveryResult } from '../types/ghost';
+import { listen, emit, type UnlistenFn } from '@tauri-apps/api/event';
+import type { OperationStatus, WalEntry } from '../types/ghost';
 import type { EditableOperation } from '../types/plan-edit';
 import { queryClient } from '../lib/query-client';
+import { useSubscriptionStore } from './subscription-store';
+import { useVfsStore } from './vfs-store';
+import { useThinkingStore, type ThoughtType, type ThoughtDetail, type AIThought } from './organize/thinking-store';
+import { useRecoveryStore, type InterruptedJobInfo } from './organize/recovery-store';
+import { useSessionStore } from './organize/session-store';
+import { usePlanStore, type OrganizePlan, type OrganizeOperation, type AnalysisProgressState } from './organize/plan-store';
+import { useExecutionStore, type ExecutionError, type ExecutionProgressState } from './organize/execution-store';
+import { computePhase, type OrganizePhase } from './organize/phase-machine';
 
-// Module-level storage for active listener cleanup functions
-// These need to be cleaned up when the organizer is closed
-let activeAnalysisListeners: {
-  unlistenThought: UnlistenFn | null;
-  unlistenProgress: UnlistenFn | null;
-} = {
-  unlistenThought: null,
-  unlistenProgress: null,
-};
+// Re-export types and validators from plan-store for backward compatibility
+export type { OrganizePlan, OrganizeOperation, AnalysisProgressState, EditableOperation } from './organize/plan-store';
+export { isValidOrganizePlan, isValidOperation, parseOrganizePlan } from './organize/plan-store';
+// Re-export types from execution-store for backward compatibility
+export type { ExecutionError, ExecutionProgressState } from './organize/execution-store';
+// Re-export phase machine types
+export type { OrganizePhase } from './organize/phase-machine';
 
-// Helper to clean up active listeners
-function cleanupAnalysisListeners() {
-  if (activeAnalysisListeners.unlistenThought) {
-    activeAnalysisListeners.unlistenThought();
-    activeAnalysisListeners.unlistenThought = null;
-  }
-  if (activeAnalysisListeners.unlistenProgress) {
-    activeAnalysisListeners.unlistenProgress();
-    activeAnalysisListeners.unlistenProgress = null;
-  }
-}
+// Re-export types from thinking-store for backward compatibility
+export type { ThoughtType, ThoughtDetail, AIThought } from './organize/thinking-store';
+// Re-export types from recovery-store for backward compatibility
+export type { InterruptedJobInfo } from './organize/recovery-store';
+
+// NOTE: Listener cleanup is now managed via store state (_analysisCleanup)
+// instead of module-level variables to prevent memory leaks and race conditions
 
 // Execution result from the parallel DAG executor
 interface ExecutionResult {
@@ -38,88 +41,23 @@ interface ExecutionResult {
   success: boolean;
 }
 
-// Detailed execution error for UI display
-export interface ExecutionError {
-  message: string;
-  operationType?: string;
-  source?: string;
-  destination?: string;
-}
+// ExecutionError moved to organize/execution-store.ts
+// and re-exported above for backward compatibility
 
-export interface OrganizeOperation {
-  opId: string;
-  type: 'create_folder' | 'move' | 'rename' | 'trash' | 'copy';
-  source?: string;
-  destination?: string;
-  path?: string;
-  newName?: string;
-  riskLevel: 'low' | 'medium' | 'high';
-}
+// OrganizeOperation and OrganizePlan types moved to organize/plan-store.ts
+// and re-exported above for backward compatibility
 
-export interface OrganizePlan {
-  planId: string;
-  description: string;
-  operations: OrganizeOperation[];
-  targetFolder: string;
-  simplificationRecommended?: boolean;
-}
+// Types ThoughtType, ThoughtDetail, AIThought are now in organize/thinking-store.ts
+// and re-exported above for backward compatibility
 
-// Thought/step types for the AI thinking stream
-export type ThoughtType =
-  | 'scanning'
-  | 'analyzing'
-  | 'naming_conventions'
-  | 'planning'
-  | 'thinking'
-  | 'executing'
-  | 'complete'
-  | 'error';
+// OrganizePhase moved to organize/phase-machine.ts
+// and re-exported above for backward compatibility
 
-// Expandable detail item for rich thought display
-export interface ThoughtDetail {
-  label: string;
-  value: string;
-}
+// ExecutionProgressState moved to organize/execution-store.ts
+// and re-exported above for backward compatibility
 
-export interface AIThought {
-  id: string;
-  type: ThoughtType;
-  content: string;
-  timestamp: number;
-  detail?: string;
-  // Expandable details for richer information display
-  expandableDetails?: ThoughtDetail[];
-}
-
-/**
- * Phase state machine for the organize workflow.
- * This provides a higher-level view of where we are in the process.
- */
-export type OrganizePhase =
-  | 'idle'         // Not organizing anything
-  | 'indexing'     // Scanning folder structure
-  | 'planning'     // AI is generating the plan
-  | 'simulation'   // Plan is ready, showing ghost preview
-  | 'review'       // User is reviewing the plan (diff view)
-  | 'committing'   // Executing operations
-  | 'rolling_back' // Undoing completed operations
-  | 'complete'     // All done
-  | 'failed';      // Error occurred
-
-// Execution progress tracked from backend events
-export interface ExecutionProgressState {
-  completed: number;
-  total: number;
-  phase: 'preparing' | 'executing' | 'complete' | 'failed';
-}
-
-// Analysis progress for the progress bar during AI analysis
-export interface AnalysisProgressState {
-  current: number;
-  total: number;
-  phase: string;
-  message: string;
-}
+// AnalysisProgressState moved to organize/plan-store.ts
+// and re-exported above for backward compatibility
 
 interface OrganizeState {
   // UI state
@@ -128,6 +66,10 @@ interface OrganizeState {
 
   // Job persistence
   currentJobId: string | null;
+  /** True if job persistence failed and we're using a local fallback ID */
+  isOfflineMode: boolean;
+  /** Error message if job persistence failed */
+  persistenceError: string | null;
 
   // Thinking stream
   thoughts: AIThought[];
@@ -181,17 +123,13 @@ interface OrganizeState {
   // Plan edit modal state
   isPlanEditModalOpen: boolean;
   editableOperations: EditableOperation[];
+
+  // Internal: Cleanup function for active analysis listeners (stored in state for proper lifecycle)
+  _analysisCleanup: (() => void) | null;
 }
 
-// Info about an interrupted job for recovery UI
-export interface InterruptedJobInfo {
-  jobId: string;
-  folderName: string;
-  targetFolder: string;
-  completedOps: number;
-  totalOps: number;
-  startedAt: number;
-}
+// InterruptedJobInfo is now in organize/recovery-store.ts
+// and re-exported above for backward compatibility
 
 interface OrganizeActions {
   // Main action - triggers automatic organize
@@ -253,7 +191,11 @@ interface OrganizeActions {
   rejectSimplification: () => void;
 }
 
-let thoughtId = 0;
+// thoughtId moved to thinking-store
+
+// Mutex for execution to prevent race conditions from rapid double-clicks
+// Zustand's set() is not truly atomic, so we need a module-level lock
+let executionMutex = false;
 
 // Execute a single operation
 async function executeOperation(op: OrganizeOperation): Promise<void> {
@@ -265,7 +207,10 @@ async function executeOperation(op: OrganizeOperation): Promise<void> {
       await invoke('move_file', { source: op.source, destination: op.destination });
       break;
     case 'rename':
-      const parentPath = op.path!.split('/').slice(0, -1).join('/');
+      if (!op.path || !op.newName) {
+        throw new Error(`Rename operation missing required fields: path=${op.path}, newName=${op.newName}`);
+      }
+      const parentPath = op.path.split('/').slice(0, -1).join('/');
       const newPath = `${parentPath}/${op.newName}`;
       await invoke('rename_file', { oldPath: op.path, newPath });
       break;
@@ -321,6 +266,8 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
   isOpen: false,
   targetFolder: null,
   currentJobId: null,
+  isOfflineMode: false,
+  persistenceError: null,
   thoughts: [],
   currentPhase: 'scanning',
   phase: 'idle',
@@ -350,47 +297,62 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
   isPlanEditModalOpen: false,
   editableOperations: [],
 
-  // Thought actions
-  addThought: (type, content, detail, expandableDetails) => set((state) => ({
-    thoughts: [...state.thoughts, {
-      id: `thought-${++thoughtId}`,
-      type,
-      content,
-      detail,
-      expandableDetails,
-      timestamp: Date.now(),
-    }],
-    currentPhase: type,
-    latestEvent: { type, detail: content },
-  })),
+  // Internal state for listener cleanup
+  _analysisCleanup: null,
 
-  setPhase: (phase) => set({ currentPhase: phase }),
+  // Thought actions - delegate to thinking-store
+  // During migration, we update both stores for backward compatibility
+  addThought: (type, content, detail, expandableDetails) => {
+    // Delegate to thinking-store (source of truth)
+    useThinkingStore.getState().addThought(type, content, detail, expandableDetails);
+    // Sync to local state for backward compatibility during migration
+    const thinkingState = useThinkingStore.getState();
+    set({
+      thoughts: thinkingState.thoughts,
+      currentPhase: thinkingState.currentPhase,
+      latestEvent: thinkingState.latestEvent,
+    });
+  },
 
-  clearThoughts: () => set({ thoughts: [], currentPhase: 'scanning' }),
+  setPhase: (phase) => {
+    useThinkingStore.getState().setPhase(phase);
+    set({ currentPhase: phase });
+  },
+
+  clearThoughts: () => {
+    useThinkingStore.getState().clearThoughts();
+    set({ thoughts: [], currentPhase: 'scanning', latestEvent: null });
+  },
 
   // Start organize flow - V6: Wait for user instruction
   // Opens the panel and waits for user to provide organization instructions
   startOrganize: async (folderPath: string) => {
+    const { isOpen, isAnalyzing, isExecuting } = get();
+
+    // Guard against overlapping sessions
+    // If a session is already in progress, ignore the new request
+    if (isOpen || isAnalyzing || isExecuting) {
+      console.warn('[Organize] Session already in progress, ignoring new request');
+      console.warn(`  isOpen=${isOpen}, isAnalyzing=${isAnalyzing}, isExecuting=${isExecuting}`);
+      return;
+    }
+
     const state = get();
     state.clearThoughts();
 
-    // Start persistent job
-    let jobId: string;
-    try {
-      const job = await invoke<{ jobId: string }>('start_organize_job', { targetFolder: folderPath });
-      jobId = job.jobId;
-    } catch (e) {
-      console.error('[Organize] Failed to start job:', e);
-      jobId = `local-${Date.now()}`;
-    }
+    // Delegate session opening to session-store
+    await useSessionStore.getState().openSession(folderPath);
 
     const folderName = folderPath.split('/').pop() || 'folder';
 
-    // V6: Open panel and wait for user instruction
+    // Sync session state and reset workflow state
+    const sessionState = useSessionStore.getState();
     set({
-      isOpen: true,
-      targetFolder: folderPath,
-      currentJobId: jobId,
+      isOpen: sessionState.isOpen,
+      targetFolder: sessionState.targetFolder,
+      currentJobId: sessionState.currentJobId,
+      isOfflineMode: sessionState.isOfflineMode,
+      persistenceError: sessionState.persistenceError,
       currentPlan: null,
       isAnalyzing: false,
       analysisError: null,
@@ -415,16 +377,28 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
       console.warn('[Organize] Failed to abort Grok plan:', e);
     });
 
-    // Clean up any active event listeners
-    cleanupAnalysisListeners();
+    // Clean up any active event listeners (using state-stored ref)
+    const { _analysisCleanup } = get();
+    _analysisCleanup?.();
 
-    // Clear analysis progress immediately
+    // Reset all sub-stores to ensure clean state
+    useSessionStore.getState().closeSession();
+    useThinkingStore.getState().clearThoughts();
+    usePlanStore.getState().resetPlan();
+    useExecutionStore.getState().clearExecution();
+    useRecoveryStore.getState().clearWal();
+    useVfsStore.getState().reset();
+
+    // Clear all workflow state in main store
     set({
       isOpen: false,
       targetFolder: null,
       currentJobId: null,
+      isOfflineMode: false,
+      persistenceError: null,
       thoughts: [],
       currentPhase: 'scanning',
+      latestEvent: null,
       phase: 'idle',
       currentPlan: null,
       isAnalyzing: false,
@@ -438,6 +412,7 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
       userInstruction: '',
       awaitingInstruction: false,
       executionErrors: [],
+      _analysisCleanup: null,
     });
   },
 
@@ -445,51 +420,48 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
   setAnalyzing: (analyzing) => set({ isAnalyzing: analyzing }),
   setAnalysisError: (error) => set({ analysisError: error }),
 
-  setExecuting: (executing) => set({ isExecuting: executing }),
-  markOpExecuted: (opId) => set((state) => ({
-    executedOps: [...state.executedOps, opId],
-  })),
-  markOpFailed: (opId) => set({ failedOp: opId, isExecuting: false }),
-  setCurrentOpIndex: (index) => set({ currentOpIndex: index }),
-  resetExecution: () => set({
-    isExecuting: false,
-    executedOps: [],
-    failedOp: null,
-    currentOpIndex: -1,
-  }),
+  // Execution actions - delegate to execution-store
+  setExecuting: (executing) => {
+    useExecutionStore.getState().setExecuting(executing);
+    set({ isExecuting: executing });
+  },
+  markOpExecuted: (opId) => {
+    useExecutionStore.getState().markOpExecuted(opId);
+    set({ executedOps: useExecutionStore.getState().executedOps });
+  },
+  markOpFailed: (opId) => {
+    useExecutionStore.getState().markOpFailed(opId);
+    const execState = useExecutionStore.getState();
+    set({ failedOp: execState.failedOp, isExecuting: execState.isExecuting });
+  },
+  setCurrentOpIndex: (index) => {
+    useExecutionStore.getState().setCurrentOpIndex(index);
+    set({ currentOpIndex: index });
+  },
+  resetExecution: () => {
+    useExecutionStore.getState().resetExecution();
+    set({
+      isExecuting: false,
+      executedOps: [],
+      failedOp: null,
+      currentOpIndex: -1,
+    });
+  },
 
-  // Recovery actions (WAL-based)
+  // Recovery actions - delegate to recovery-store
+  // During migration, sync state for backward compatibility
   checkForInterruptedJob: async () => {
-    try {
-      const recoveryInfo = await invoke<WalRecoveryInfo | null>('wal_check_recovery');
-
-      if (recoveryInfo) {
-        set({
-          hasInterruptedJob: true,
-          interruptedJob: {
-            jobId: recoveryInfo.jobId,
-            folderName: recoveryInfo.targetFolder.split('/').pop() || 'folder',
-            targetFolder: recoveryInfo.targetFolder,
-            completedOps: recoveryInfo.completedCount,
-            totalOps: recoveryInfo.completedCount + recoveryInfo.pendingCount,
-            startedAt: new Date(recoveryInfo.startedAt).getTime(),
-          },
-        });
-      }
-    } catch (e) {
-      console.error('[Organize] Failed to check for interrupted job:', e);
-    }
+    await useRecoveryStore.getState().checkForInterruptedJob();
+    // Sync state for backward compatibility
+    const recoveryState = useRecoveryStore.getState();
+    set({
+      hasInterruptedJob: recoveryState.hasInterruptedJob,
+      interruptedJob: recoveryState.interruptedJob,
+    });
   },
 
   dismissInterruptedJob: async () => {
-    const { interruptedJob } = get();
-    if (!interruptedJob) return;
-
-    try {
-      await invoke('wal_discard_job', { jobId: interruptedJob.jobId });
-    } catch (e) {
-      console.error('[Organize] Failed to discard job:', e);
-    }
+    await useRecoveryStore.getState().dismissInterruptedJob();
     set({
       hasInterruptedJob: false,
       interruptedJob: null,
@@ -500,88 +472,50 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
     const { interruptedJob } = get();
     if (!interruptedJob) return;
 
-    set({
-      hasInterruptedJob: false,
-      isExecuting: true,
-      phase: 'committing',
+    set({ isExecuting: true });
+
+    await useRecoveryStore.getState().resumeInterruptedJob((phase) => {
+      if (phase === 'committing') {
+        set({ phase: 'committing' });
+      } else if (phase === 'complete') {
+        set({ phase: 'complete', isExecuting: false, interruptedJob: null });
+      } else if (phase === 'failed') {
+        set({ phase: 'failed', isExecuting: false });
+      }
     });
 
-    get().addThought('executing', 'Resuming interrupted job...',
-      `Continuing from operation ${interruptedJob.completedOps + 1}`);
-
-    try {
-      const result = await invoke<WalRecoveryResult>('wal_resume_job', {
-        jobId: interruptedJob.jobId
-      });
-
-      if (result.success) {
-        get().addThought('complete', 'Resume complete!',
-          `Completed ${result.completedCount} remaining operations`);
-        set({
-          phase: 'complete',
-          isExecuting: false,
-          interruptedJob: null,
-        });
-      } else {
-        for (const error of result.errors) {
-          get().addThought('error', 'Operation failed', error);
-        }
-        set({
-          phase: 'failed',
-          isExecuting: false,
-        });
-      }
-    } catch (e) {
-      get().addThought('error', 'Resume failed', String(e));
-      set({
-        phase: 'failed',
-        isExecuting: false,
-      });
-    }
+    // Sync thinking state
+    const thinkingState = useThinkingStore.getState();
+    set({
+      thoughts: thinkingState.thoughts,
+      currentPhase: thinkingState.currentPhase,
+      latestEvent: thinkingState.latestEvent,
+    });
   },
 
   rollbackInterruptedJob: async () => {
     const { interruptedJob } = get();
     if (!interruptedJob) return;
 
-    set({
-      hasInterruptedJob: false,
-      phase: 'rolling_back',
-      rollbackProgress: { completed: 0, total: interruptedJob.completedOps },
+    set({ rollbackProgress: { completed: 0, total: interruptedJob.completedOps } });
+
+    await useRecoveryStore.getState().rollbackInterruptedJob((phase) => {
+      if (phase === 'rolling_back') {
+        set({ phase: 'rolling_back' });
+      } else if (phase === 'idle') {
+        set({ phase: 'idle', rollbackProgress: null, interruptedJob: null });
+      } else if (phase === 'failed') {
+        set({ phase: 'failed', rollbackProgress: null });
+      }
     });
 
-    get().addThought('executing', 'Rolling back changes...',
-      `Undoing ${interruptedJob.completedOps} completed operations`);
-
-    try {
-      const result = await invoke<WalRecoveryResult>('wal_rollback_job', {
-        jobId: interruptedJob.jobId
-      });
-
-      if (result.success) {
-        get().addThought('complete', 'Rollback complete!',
-          `Undid ${result.completedCount} operations`);
-        set({
-          phase: 'idle',
-          rollbackProgress: null,
-          interruptedJob: null,
-        });
-      } else {
-        for (const error of result.errors) {
-          get().addThought('error', 'Rollback failed', error);
-        }
-        set({
-          phase: 'failed',
-          rollbackProgress: null,
-        });
-      }
-    } catch (e) {
-      get().addThought('error', 'Rollback failed', String(e));
-      set({
-        phase: 'failed',
-        rollbackProgress: null,
-      });
-    }
+    // Sync thinking state
+    const thinkingState = useThinkingStore.getState();
+    set({
+      thoughts: thinkingState.thoughts,
+      currentPhase: thinkingState.currentPhase,
+      latestEvent: thinkingState.latestEvent,
+    });
   },
 
   // V6: Set user instruction
@@ -609,35 +543,57 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
     get().addThought('scanning', `Analyzing ${folderName}...`, 'Using your instructions to design organization');
 
     try {
-      // Clean up any existing listeners first
-      cleanupAnalysisListeners();
+      // Clean up any existing listeners first (using state-stored ref)
+      const existingCleanup = get()._analysisCleanup;
+      existingCleanup?.();
 
       // Set up event listeners for streaming from Rust
+      let unlistenThought: UnlistenFn | null = null;
+      let unlistenProgress: UnlistenFn | null = null;
+      let listenersActive = true;
+
+      // Cleanup function stored in state for proper lifecycle management
+      const cleanupListeners = () => {
+        if (!listenersActive) return;
+        listenersActive = false;
+        set({ _analysisCleanup: null });
+        unlistenThought?.();
+        unlistenProgress?.();
+      };
+
       try {
         // Listen for ai-thought events (phase transitions)
-        activeAnalysisListeners.unlistenThought = await listen<{ type: string; content: string; detail?: string; expandableDetails?: ThoughtDetail[] }>('ai-thought', (event) => {
+        unlistenThought = await listen<{ type: string; content: string; detail?: string; expandableDetails?: ThoughtDetail[] }>('ai-thought', (event) => {
           const { type, content, detail, expandableDetails } = event.payload;
           get().addThought(type as ThoughtType, content, detail, expandableDetails);
         });
 
         // Listen for analysis-progress events (progress bar updates)
-        activeAnalysisListeners.unlistenProgress = await listen<AnalysisProgressState>('analysis-progress', (event) => {
+        unlistenProgress = await listen<AnalysisProgressState>('analysis-progress', (event) => {
           get().setAnalysisProgress(event.payload);
         });
-      } catch {
-        // Event listener failed, continue without it
+
+        // Store cleanup in state (not module-level) for proper React lifecycle
+        set({ _analysisCleanup: cleanupListeners });
+      } catch (e) {
+        // Event listener failed - log warning but continue
+        // Progress updates may not display but analysis can still proceed
+        console.warn('[Organize] Event listener setup failed, progress updates may not display:', e);
       }
 
       // V6 Hybrid Pipeline: GPT-5-nano exploration + Claude planning
       // OpenAI key is expected from OPENAI_API_KEY environment variable
+      // Get userId for billing checks
+      const userId = useSubscriptionStore.getState().userId;
       get().addThought('analyzing', 'Using V6 Hybrid pipeline', 'GPT-5-nano explore → Claude plan');
       const rawPlan = await invoke<OrganizePlan>('generate_organize_plan_hybrid', {
+        userId,
         folderPath: targetFolder,
         userRequest: userInstruction,
       });
 
       // Clean up listeners (analysis complete)
-      cleanupAnalysisListeners();
+      cleanupListeners();
 
       // Clear analysis progress since we're done analyzing
       get().setAnalysisProgress(null);
@@ -714,6 +670,13 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
       });
 
     } catch (error) {
+      // Clean up listeners on error
+      const cleanup = get()._analysisCleanup;
+      cleanup?.();
+
+      // Reset VFS state to prevent stale ghost previews
+      useVfsStore.getState().reset();
+
       get().addThought('error', 'Organization failed', String(error));
 
       // Persist error
@@ -726,6 +689,7 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
         isAnalyzing: false,
         analysisError: String(error),
         phase: 'failed',
+        _analysisCleanup: null,
       });
     }
   },
@@ -838,219 +802,272 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
   // Execute plan using parallel DAG-based execution
   // V5: Uses event-based progress tracking instead of per-operation thoughts
   acceptPlanParallel: async () => {
-    const { currentPlan, phase } = get();
-    if (!currentPlan || (phase !== 'simulation' && phase !== 'review')) {
+    // True mutex guard - prevents race conditions from rapid double-clicks
+    // Zustand's set() is not truly atomic, so we use a module-level lock
+    if (executionMutex) {
+      console.warn('[Organize] Execution mutex held, ignoring duplicate request');
       return;
     }
-
-    const totalOps = currentPlan.operations.length;
-
-    // Transition to committing phase
-    set({ phase: 'committing', isExecuting: true });
-
-    // Initialize operation statuses
-    const operationStatuses = new Map<string, OperationStatus>();
-    for (const op of currentPlan.operations) {
-      operationStatuses.set(op.opId, 'pending');
-    }
-    set({ operationStatuses });
-
-    // V5: Initialize progress state (replaces per-operation thoughts)
-    get().setExecutionProgress({
-      completed: 0,
-      total: totalOps,
-      phase: 'executing',
-    });
-
-    // V5: Single thought for execution start (no per-operation thoughts)
-    get().addThought('executing', 'Organizing files...',
-      `${totalOps} operations queued for parallel execution`);
-
-    // Set up event listener for progress updates from backend
-    let unlisten: UnlistenFn | null = null;
-    let unlistenOpComplete: UnlistenFn | null = null;
-
-    // V7: Debounced directory refresh for hot reload
-    // Collect affected directories and batch refresh every 150ms
-    const pendingDirs = new Set<string>();
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const flushPendingRefresh = () => {
-      if (pendingDirs.size > 0) {
-        console.log('[organize-store] Hot reload: refreshing', pendingDirs.size, 'directories');
-        for (const dir of pendingDirs) {
-          queryClient.invalidateQueries({
-            queryKey: ['directory', dir],
-            exact: false, // Match any showHidden value
-          });
-        }
-        pendingDirs.clear();
-      }
-    };
+    executionMutex = true;
 
     try {
-      unlisten = await listen<{ completed: number; total: number }>('execution-progress', (event) => {
-        get().setExecutionProgress({
-          completed: event.payload.completed,
-          total: event.payload.total,
-          phase: 'executing',
-        });
-      });
+      const { currentPlan, phase, isExecuting } = get();
 
-      // V7: Listen for per-operation completion events for hot reload
-      unlistenOpComplete = await listen<{ affectedDirs: string[] }>('execution-op-complete', (event) => {
-        const dirs = event.payload.affectedDirs;
-        if (dirs && dirs.length > 0) {
-          // Add to pending set
-          for (const dir of dirs) {
-            pendingDirs.add(dir);
-          }
-
-          // Debounce: reset timer and flush after 150ms of no new events
-          if (debounceTimer) clearTimeout(debounceTimer);
-          debounceTimer = setTimeout(flushPendingRefresh, 150);
-        }
-      });
-    } catch {
-      // Event listener failed, continue without real-time progress/refresh
-    }
-
-    try {
-      // Convert plan to backend format (strip frontend-only fields like riskLevel)
-      // Note: backend expects 'type' not 'opType' per serde rename
-      const backendPlan = {
-        planId: currentPlan.planId,
-        description: currentPlan.description,
-        targetFolder: currentPlan.targetFolder,
-        operations: currentPlan.operations.map(op => ({
-          opId: op.opId,
-          type: op.type,  // Backend expects 'type' (serde rename)
-          source: op.source,
-          destination: op.destination,
-          path: op.path,
-          newName: op.newName,
-        })),
-      };
-
-      // Execute using parallel DAG executor with auto-rename conflict policy
-      // Pass originalFolder for post-execution cleanup of empty directories
-      // Pass userInstruction for history tracking (multi-level undo)
-      const result = await invoke<ExecutionResult>('execute_plan_parallel', {
-        plan: backendPlan,
-        conflictPolicy: 'auto_rename', // Auto-rename duplicates like file_1.pdf, file_2.pdf
-        originalFolder: get().targetFolder, // Original folder for empty directory cleanup
-        userInstruction: get().userInstruction || undefined, // For history tracking
-      });
-
-      // Clean up listeners and flush any pending refreshes
-      if (unlisten) unlisten();
-      if (unlistenOpComplete) unlistenOpComplete();
-      if (debounceTimer) clearTimeout(debounceTimer);
-      flushPendingRefresh(); // Final flush for any remaining directories
-
-      if (result.success) {
-        // Mark all operations as completed
-        for (const op of currentPlan.operations) {
-          get().setOperationStatus(op.opId, 'completed');
-          get().markOpExecuted(op.opId);
-        }
-
-        // V5: Update progress to complete state
-        const processedCount = result.completedCount + result.skippedCount + result.renamedCount;
-        get().setExecutionProgress({
-          completed: processedCount,
-          total: totalOps,
-          phase: 'complete',
-        });
-
-        // V6: Enhanced completion message with rename/skip info
-        let completionDetail = `${result.completedCount} files organized`;
-        if (result.renamedCount > 0) {
-          completionDetail += `, ${result.renamedCount} renamed to avoid conflicts`;
-        }
-        if (result.skippedCount > 0) {
-          completionDetail += `, ${result.skippedCount} skipped`;
-        }
-        get().addThought('complete', 'Organization complete!', completionDetail);
-
-        // Get the target folder before clearing state
-        const completedFolder = currentPlan.targetFolder;
-
-        set({
-          phase: 'complete',
-          isExecuting: false,
-          currentOpIndex: -1,
-          // Set completion tracking to trigger file list refresh
-          lastCompletedAt: Date.now(),
-          completedTargetFolder: completedFolder,
-        });
-
-        // Mark job as complete
-        const jobId = get().currentJobId;
-        if (jobId && !jobId.startsWith('local-')) {
-          invoke('complete_organize_job', { jobId }).catch(console.error);
-          setTimeout(() => invoke('clear_organize_job').catch(console.error), 1000);
-        }
-      } else {
-        // Partial failure - V6: include renamed/skipped in progress
-        const processedCount = result.completedCount + result.skippedCount + result.renamedCount;
-        get().setExecutionProgress({
-          completed: processedCount,
-          total: totalOps,
-          phase: 'failed',
-        });
-
-        // V6: Enhanced error message with all outcomes
-        let errorDetail = `${result.completedCount} succeeded, ${result.failedCount} failed`;
-        if (result.renamedCount > 0) {
-          errorDetail += `, ${result.renamedCount} renamed`;
-        }
-        if (result.skippedCount > 0) {
-          errorDetail += `, ${result.skippedCount} skipped`;
-        }
-        get().addThought('error', 'Some operations failed', errorDetail);
-
-        // V7: Store all execution errors for detailed error dialog
-        const executionErrors: ExecutionError[] = result.errors.map((msg) => ({
-          message: msg,
-        }));
-
-        set({
-          phase: 'failed',
-          isExecuting: false,
-          executionErrors,
-        });
-
-        // Persist failure (keep up to 10 errors for logging)
-        const jobId = get().currentJobId;
-        if (jobId && !jobId.startsWith('local-')) {
-          invoke('fail_organize_job', {
-            jobId,
-            error: `${result.failedCount} operations failed: ${result.errors.slice(0, 10).join('; ')}`
-          }).catch(console.error);
-        }
+      // Guard against invalid states
+      if (isExecuting) {
+        console.warn('[Organize] Execution already in progress');
+        return;
       }
-    } catch (error) {
-      // Clean up listeners and flush any pending refreshes
-      if (unlisten) unlisten();
-      if (unlistenOpComplete) unlistenOpComplete();
-      if (debounceTimer) clearTimeout(debounceTimer);
-      flushPendingRefresh(); // Final flush for any remaining directories
+      if (!currentPlan || (phase !== 'simulation' && phase !== 'review')) {
+        return;
+      }
 
+      // Set isExecuting in store
+      set({ isExecuting: true });
+
+      // VFS-WAL sync validation: ensure the plan being executed matches what was previewed
+      const simulatedPlanId = useVfsStore.getState().getSimulatedPlanId();
+      if (simulatedPlanId && simulatedPlanId !== currentPlan.planId) {
+        console.error('[Organize] VFS-WAL sync error: plan was modified after simulation');
+        console.error(`  Simulated planId: ${simulatedPlanId}`);
+        console.error(`  Current planId: ${currentPlan.planId}`);
+        get().addThought('error', 'Plan out of sync',
+          'The plan was modified after preview. Please re-simulate before executing.');
+        set({ phase: 'failed', isExecuting: false, analysisError: 'Plan was modified after preview - please re-simulate' });
+        return; // Mutex released in finally
+      }
+
+      const totalOps = currentPlan.operations.length;
+
+      // Transition to committing phase (isExecuting already set above)
+      set({ phase: 'committing' });
+
+      // Initialize operation statuses
+      const operationStatuses = new Map<string, OperationStatus>();
+      for (const op of currentPlan.operations) {
+        operationStatuses.set(op.opId, 'pending');
+      }
+      set({ operationStatuses });
+
+      // V5: Initialize progress state (replaces per-operation thoughts)
       get().setExecutionProgress({
         completed: 0,
         total: totalOps,
-        phase: 'failed',
+        phase: 'executing',
       });
 
-      get().addThought('error', 'Execution failed', String(error));
-      set({ phase: 'failed', isExecuting: false });
+      // V5: Single thought for execution start (no per-operation thoughts)
+      get().addThought('executing', 'Organizing files...',
+        `${totalOps} operations queued for parallel execution`);
 
-      // Persist failure
-      const jobId = get().currentJobId;
-      if (jobId && !jobId.startsWith('local-')) {
-        invoke('fail_organize_job', { jobId, error: String(error) }).catch(console.error);
+      // Set up event listener for progress updates from backend
+      let unlisten: UnlistenFn | null = null;
+      let unlistenOpComplete: UnlistenFn | null = null;
+
+      // V7: Debounced directory refresh for hot reload
+      // Collect affected directories and batch refresh every 150ms
+      const pendingDirs = new Set<string>();
+      let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const flushPendingRefresh = () => {
+        if (pendingDirs.size > 0) {
+          console.log('[organize-store] Hot reload: refreshing', pendingDirs.size, 'directories');
+          for (const dir of pendingDirs) {
+            queryClient.invalidateQueries({
+              queryKey: ['directory', dir],
+              exact: false, // Match any showHidden value
+            });
+          }
+          pendingDirs.clear();
+        }
+      };
+
+      try {
+        unlisten = await listen<{ completed: number; total: number }>('execution-progress', (event) => {
+          get().setExecutionProgress({
+            completed: event.payload.completed,
+            total: event.payload.total,
+            phase: 'executing',
+          });
+        });
+
+        // V7: Listen for per-operation completion events for hot reload
+        unlistenOpComplete = await listen<{ affectedDirs: string[] }>('execution-op-complete', (event) => {
+          const dirs = event.payload.affectedDirs;
+          if (dirs && dirs.length > 0) {
+            // Add to pending set
+            for (const dir of dirs) {
+              pendingDirs.add(dir);
+            }
+
+            // Debounce: reset timer and flush after 150ms of no new events
+            if (debounceTimer) clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(flushPendingRefresh, 150);
+          }
+        });
+      } catch (e) {
+        // Event listener failed - log warning but continue
+        // Real-time progress and hot reload may not work but execution can still proceed
+        console.warn('[Organize] Execution event listener setup failed:', e);
       }
+
+      try {
+        // Convert plan to backend format (strip frontend-only fields like riskLevel)
+        // Note: backend expects 'type' not 'opType' per serde rename
+        const backendPlan = {
+          planId: currentPlan.planId,
+          description: currentPlan.description,
+          targetFolder: currentPlan.targetFolder,
+          operations: currentPlan.operations.map(op => ({
+            opId: op.opId,
+            type: op.type,  // Backend expects 'type' (serde rename)
+            source: op.source,
+            destination: op.destination,
+            path: op.path,
+            newName: op.newName,
+          })),
+        };
+
+        // Execute using parallel DAG executor with auto-rename conflict policy
+        // Pass originalFolder for post-execution cleanup of empty directories
+        // Pass userInstruction for history tracking (multi-level undo)
+        const result = await invoke<ExecutionResult>('execute_plan_parallel', {
+          plan: backendPlan,
+          conflictPolicy: 'auto_rename', // Auto-rename duplicates like file_1.pdf, file_2.pdf
+          originalFolder: get().targetFolder, // Original folder for empty directory cleanup
+          userInstruction: get().userInstruction || undefined, // For history tracking
+        });
+
+        // Clean up listeners and flush any pending refreshes
+        if (unlisten) unlisten();
+        if (unlistenOpComplete) unlistenOpComplete();
+        if (debounceTimer) clearTimeout(debounceTimer);
+        flushPendingRefresh(); // Final flush for any remaining directories
+
+        if (result.success) {
+          // Mark all operations as completed
+          for (const op of currentPlan.operations) {
+            get().setOperationStatus(op.opId, 'completed');
+            get().markOpExecuted(op.opId);
+          }
+
+          // V5: Update progress to complete state
+          const processedCount = result.completedCount + result.skippedCount + result.renamedCount;
+          get().setExecutionProgress({
+            completed: processedCount,
+            total: totalOps,
+            phase: 'complete',
+          });
+
+          // V6: Enhanced completion message with rename/skip info
+          let completionDetail = `${result.completedCount} files organized`;
+          if (result.renamedCount > 0) {
+            completionDetail += `, ${result.renamedCount} renamed to avoid conflicts`;
+          }
+          if (result.skippedCount > 0) {
+            completionDetail += `, ${result.skippedCount} skipped`;
+          }
+          get().addThought('complete', 'Organization complete!', completionDetail);
+
+          // Get the target folder before clearing state
+          const completedFolder = currentPlan.targetFolder;
+
+          // Mark completion in session store
+          useSessionStore.getState().markComplete(completedFolder);
+          const sessionState = useSessionStore.getState();
+
+          set({
+            phase: 'complete',
+            isExecuting: false,
+            currentOpIndex: -1,
+            // Sync completion tracking from session store
+            lastCompletedAt: sessionState.lastCompletedAt,
+            completedTargetFolder: sessionState.completedTargetFolder,
+          });
+
+          // Mark job as complete
+          const jobId = get().currentJobId;
+          if (jobId && !jobId.startsWith('local-')) {
+            invoke('complete_organize_job', { jobId }).catch(console.error);
+            setTimeout(() => invoke('clear_organize_job').catch(console.error), 1000);
+          }
+
+          // Emit event for UsageSync to record in Convex
+          emit('usage:record-organize', {
+            folderPath: currentPlan.targetFolder,
+            folderName: currentPlan.targetFolder.split('/').pop() || 'folder',
+            operationCount: currentPlan.operations.length,
+            operations: currentPlan.operations.map(op => ({
+              type: op.type,
+              sourcePath: op.source || op.path || '',
+              destPath: op.destination,
+            })),
+            summary: currentPlan.description,
+          });
+        } else {
+          // Partial failure - V6: include renamed/skipped in progress
+          const processedCount = result.completedCount + result.skippedCount + result.renamedCount;
+          get().setExecutionProgress({
+            completed: processedCount,
+            total: totalOps,
+            phase: 'failed',
+          });
+
+          // V6: Enhanced error message with all outcomes
+          let errorDetail = `${result.completedCount} succeeded, ${result.failedCount} failed`;
+          if (result.renamedCount > 0) {
+            errorDetail += `, ${result.renamedCount} renamed`;
+          }
+          if (result.skippedCount > 0) {
+            errorDetail += `, ${result.skippedCount} skipped`;
+          }
+          get().addThought('error', 'Some operations failed', errorDetail);
+
+          // V7: Store all execution errors for detailed error dialog
+          const executionErrors: ExecutionError[] = result.errors.map((msg) => ({
+            message: msg,
+          }));
+
+          set({
+            phase: 'failed',
+            isExecuting: false,
+            executionErrors,
+          });
+
+          // Persist failure (keep up to 10 errors for logging)
+          const jobId = get().currentJobId;
+          if (jobId && !jobId.startsWith('local-')) {
+            invoke('fail_organize_job', {
+              jobId,
+              error: `${result.failedCount} operations failed: ${result.errors.slice(0, 10).join('; ')}`
+            }).catch(console.error);
+          }
+        }
+      } catch (error) {
+        // Clean up listeners and flush any pending refreshes
+        if (unlisten) unlisten();
+        if (unlistenOpComplete) unlistenOpComplete();
+        if (debounceTimer) clearTimeout(debounceTimer);
+        flushPendingRefresh(); // Final flush for any remaining directories
+
+        get().setExecutionProgress({
+          completed: 0,
+          total: totalOps,
+          phase: 'failed',
+        });
+
+        get().addThought('error', 'Execution failed', String(error));
+        set({ phase: 'failed', isExecuting: false });
+
+        // Persist failure
+        const jobId = get().currentJobId;
+        if (jobId && !jobId.startsWith('local-')) {
+          invoke('fail_organize_job', { jobId, error: String(error) }).catch(console.error);
+        }
+      }
+    } finally {
+      // Always release the mutex
+      executionMutex = false;
     }
   },
 
@@ -1075,6 +1092,11 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
       phase: 'rolling_back',
       rollbackProgress: { completed: 0, total: executedOps.length },
     });
+
+    // Track rollback results for detailed reporting
+    let successCount = 0;
+    let failedCount = 0;
+    const failedOperations: { type: string; error: string }[] = [];
 
     // Rollback in reverse order
     const reversedWal = [...wal].reverse().filter(entry => entry.status === 'completed');
@@ -1116,36 +1138,64 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
           // copy and trash are harder to reverse safely
         }
 
+        successCount++;
         set((state) => ({
           rollbackProgress: state.rollbackProgress
             ? { ...state.rollbackProgress, completed: i + 1 }
             : null,
         }));
       } catch (error) {
-        get().addThought('error', `Rollback failed: ${entry.type}`, String(error));
+        failedCount++;
+        const errorStr = String(error);
+        failedOperations.push({ type: entry.type, error: errorStr });
+        get().addThought('error', `Rollback failed: ${entry.type}`, errorStr);
         // Continue with next operation
       }
     }
 
-    get().addThought('complete', 'Rollback complete', `Reversed ${reversedWal.length} operations`);
-    set({
-      phase: 'idle',
-      rollbackProgress: null,
-      executedOps: [],
-      wal: [],
-    });
+    // Report detailed rollback results
+    if (failedCount === 0) {
+      get().addThought('complete', 'Rollback complete', `Reversed all ${successCount} operations successfully`);
+      set({
+        phase: 'idle',
+        rollbackProgress: null,
+        executedOps: [],
+        wal: [],
+      });
+    } else {
+      // Partial failure - report detailed results
+      const failedSummary = failedOperations
+        .slice(0, 5)
+        .map(f => `${f.type}: ${f.error.slice(0, 50)}`)
+        .join('; ');
+      const moreText = failedOperations.length > 5 ? ` (+${failedOperations.length - 5} more)` : '';
+
+      get().addThought(
+        'error',
+        `Rollback partially complete`,
+        `${successCount}/${reversedWal.length} reversed, ${failedCount} failed: ${failedSummary}${moreText}`
+      );
+
+      set({
+        phase: 'failed',
+        rollbackProgress: null,
+        // Keep executedOps and wal so user knows what wasn't rolled back
+        executionErrors: failedOperations.map(f => ({
+          message: f.error,
+          operationType: f.type,
+        })),
+      });
+    }
   },
 
   setOperationStatus: (opId: string, status: OperationStatus) => {
-    set((state) => {
-      const newStatuses = new Map(state.operationStatuses);
-      newStatuses.set(opId, status);
-      return { operationStatuses: newStatuses };
-    });
+    useExecutionStore.getState().setOperationStatus(opId, status);
+    set({ operationStatuses: new Map(useExecutionStore.getState().operationStatuses) });
   },
 
-  // V5: Execution progress updates
+  // V5: Execution progress updates - delegate to execution-store
   setExecutionProgress: (progress: ExecutionProgressState | null) => {
+    useExecutionStore.getState().setExecutionProgress(progress);
     set({ executionProgress: progress });
   },
 
@@ -1154,27 +1204,23 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
     set({ analysisProgress: progress });
   },
 
-  // Plan edit modal actions
+  // Plan edit modal actions - delegate to plan-store
   openPlanEditModal: () => {
+    // Sync currentPlan to plan-store before calling openPlanEditModal
+    // so plan-store.openPlanEditModal() can read the current plan
     const { currentPlan } = get();
     if (!currentPlan) return;
-
-    // Create editable copies of all operations
-    const editableOps: EditableOperation[] = currentPlan.operations.map((op) => ({
-      ...op,
-      enabled: true,
-      isModified: false,
-      originalDestination: op.destination,
-      originalNewName: op.newName,
-    }));
-
+    usePlanStore.getState().setPlan(currentPlan);
+    usePlanStore.getState().openPlanEditModal();
+    const planState = usePlanStore.getState();
     set({
-      isPlanEditModalOpen: true,
-      editableOperations: editableOps,
+      isPlanEditModalOpen: planState.isPlanEditModalOpen,
+      editableOperations: planState.editableOperations,
     });
   },
 
   closePlanEditModal: () => {
+    usePlanStore.getState().closePlanEditModal();
     set({
       isPlanEditModalOpen: false,
       editableOperations: [],
@@ -1190,94 +1236,82 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
       .filter((op) => op.enabled)
       .map(({ enabled, isModified, originalDestination, originalNewName, ...op }) => op);
 
-    // Update the plan with filtered operations
+    // Generate new planId since plan was modified
+    // This ensures VFS-WAL sync validation will catch any edits
+    const newPlanId = `plan-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+    // Update the plan with filtered operations and new planId
     const updatedPlan: OrganizePlan = {
       ...currentPlan,
+      planId: newPlanId,
       operations: filteredOps,
     };
 
+    // IMPORTANT: Update VFS BEFORE main store to prevent stale state reads
+    // Components subscribing to phase changes might read VFS state immediately
+    useVfsStore.getState().applyPlan(updatedPlan);
+    usePlanStore.getState().setPlan(updatedPlan);
+
+    // Set phase back to simulation to force re-preview
+    // This is done AFTER VFS update so components see consistent state
     set({
       currentPlan: updatedPlan,
       isPlanEditModalOpen: false,
       editableOperations: [],
+      phase: 'simulation', // Force re-simulation for safety
     });
 
-    // Note: Ghost preview will be rebuilt by vfs-store when it detects plan change
+    get().addThought('planning', 'Plan updated',
+      `${filteredOps.length} operations ready for preview`);
   },
 
   toggleOperation: (opId: string) => {
-    set((state) => ({
-      editableOperations: state.editableOperations.map((op) =>
-        op.opId === opId ? { ...op, enabled: !op.enabled, isModified: true } : op
-      ),
-    }));
+    usePlanStore.getState().toggleOperation(opId);
+    set({ editableOperations: usePlanStore.getState().editableOperations });
   },
 
   toggleOperationGroup: (targetFolder: string) => {
-    const { editableOperations } = get();
-
-    // Find operations in this group
-    const groupOps = editableOperations.filter((op) => {
-      if (op.type === 'create_folder') {
-        return op.path === targetFolder;
-      }
-      if (op.type === 'move' || op.type === 'copy') {
-        const destFolder = op.destination?.split('/').slice(0, -1).join('/');
-        return destFolder === targetFolder;
-      }
-      if (op.type === 'rename') {
-        const parentFolder = op.path?.split('/').slice(0, -1).join('/');
-        return parentFolder === targetFolder;
-      }
-      return false;
-    });
-
-    // Determine new state (if any enabled, disable all; otherwise enable all)
-    const anyEnabled = groupOps.some((op) => op.enabled);
-    const newEnabled = !anyEnabled;
-
-    set((state) => ({
-      editableOperations: state.editableOperations.map((op) => {
-        const inGroup = groupOps.find((g) => g.opId === op.opId);
-        if (inGroup) {
-          return { ...op, enabled: newEnabled, isModified: true };
-        }
-        return op;
-      }),
-    }));
+    usePlanStore.getState().toggleOperationGroup(targetFolder);
+    set({ editableOperations: usePlanStore.getState().editableOperations });
   },
 
   updateOperationDestination: (opId: string, newDestination: string) => {
-    set((state) => ({
-      editableOperations: state.editableOperations.map((op) =>
-        op.opId === opId
-          ? { ...op, destination: newDestination, isModified: true }
-          : op
-      ),
-    }));
+    usePlanStore.getState().updateOperationDestination(opId, newDestination);
+    set({ editableOperations: usePlanStore.getState().editableOperations });
   },
 
   updateOperationNewName: (opId: string, newName: string) => {
-    set((state) => ({
-      editableOperations: state.editableOperations.map((op) =>
-        op.opId === opId ? { ...op, newName, isModified: true } : op
-      ),
-    }));
+    usePlanStore.getState().updateOperationNewName(opId, newName);
+    set({ editableOperations: usePlanStore.getState().editableOperations });
   },
 
   // Simplification prompt actions
   acceptSimplification: async () => {
-    const { targetFolder, isAnalyzing, awaitingSimplificationChoice } = get();
+    const { targetFolder, isAnalyzing, awaitingSimplificationChoice, _analysisCleanup } = get();
 
     // Guard against double-invocation (e.g., rapid double-click)
     if (!targetFolder || isAnalyzing || !awaitingSimplificationChoice) return;
 
+    // Clean up any existing listeners first
+    _analysisCleanup?.();
+
     set({ awaitingSimplificationChoice: false, isAnalyzing: true, phase: 'planning' });
     get().addThought('analyzing', 'Analyzing folder structure for simplification...');
 
+    // Set up listener cleanup with state-based pattern
+    let unlistenThought: UnlistenFn | null = null;
+    let listenersActive = true;
+
+    const cleanupListeners = () => {
+      if (!listenersActive) return;
+      listenersActive = false;
+      set({ _analysisCleanup: null });
+      unlistenThought?.();
+    };
+
     try {
       // Set up event listeners for AI thoughts
-      const unlistenThought = await listen<{
+      unlistenThought = await listen<{
         type: string;
         content: string;
         expandableDetails?: Array<{ label: string; value: string }>;
@@ -1290,14 +1324,19 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
           expandableDetails
         );
       });
-      activeAnalysisListeners.unlistenThought = unlistenThought;
 
+      // Store cleanup in state for proper lifecycle
+      set({ _analysisCleanup: cleanupListeners });
+
+      // Get userId for billing checks
+      const userId = useSubscriptionStore.getState().userId;
       const rawPlan = await invoke<OrganizePlan>('generate_simplification_plan', {
+        userId,
         folderPath: targetFolder,
       });
 
       // Clean up listeners
-      cleanupAnalysisListeners();
+      cleanupListeners();
 
       if (!rawPlan?.operations) {
         throw new Error('No plan returned from simplification analysis');
@@ -1323,7 +1362,7 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
         phase: 'simulation',
       });
     } catch (error) {
-      cleanupAnalysisListeners();
+      cleanupListeners();
       get().addThought('error', 'Simplification failed', String(error));
       set({
         isAnalyzing: false,
@@ -1366,4 +1405,47 @@ function getOperationDescription(op: OrganizeOperation): string {
     default:
       return op.type;
   }
+}
+
+/**
+ * React hook that computes the current phase from organize-store state.
+ * This hook subscribes to the main organize-store and computes the phase
+ * from actual state values.
+ *
+ * Uses useShallow for proper memoization - only triggers re-renders when
+ * the selected values actually change, not on every store update.
+ *
+ * NOTE: Defined here in organize-store.ts to avoid circular imports.
+ * Re-exported from organize/index.ts for convenience.
+ */
+export function useComputedPhase(): OrganizePhase {
+  const state = useOrganizeStore(
+    useShallow((s) => ({
+      currentPlan: s.currentPlan,
+      awaitingInstruction: s.awaitingInstruction,
+      isAnalyzing: s.isAnalyzing,
+      analysisProgress: s.analysisProgress,
+      analysisError: s.analysisError,
+      isExecuting: s.isExecuting,
+      executionProgress: s.executionProgress,
+      rollbackProgress: s.rollbackProgress,
+    }))
+  );
+
+  return computePhase(
+    {
+      currentPlan: state.currentPlan,
+      awaitingInstruction: state.awaitingInstruction,
+      isAnalyzing: state.isAnalyzing,
+      analysisProgress: state.analysisProgress,
+      analysisError: state.analysisError,
+    },
+    {
+      isExecuting: state.isExecuting,
+      executionProgress: state.executionProgress,
+    },
+    {
+      rollbackProgress: state.rollbackProgress,
+    }
+  );
 }

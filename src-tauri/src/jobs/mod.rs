@@ -42,6 +42,35 @@ pub struct OrganizePlan {
     pub simplification_recommended: Option<bool>,
 }
 
+impl OrganizePlan {
+    /// Compute a hash of the plan for validation.
+    /// This is used to ensure the plan hasn't been modified between simulation and execution.
+    pub fn compute_hash(&self) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+
+        // Hash the plan ID
+        self.plan_id.hash(&mut hasher);
+
+        // Hash all operations in order
+        for op in &self.operations {
+            op.op_id.hash(&mut hasher);
+            op.op_type.hash(&mut hasher);
+            op.source.hash(&mut hasher);
+            op.destination.hash(&mut hasher);
+            op.path.hash(&mut hasher);
+            op.new_name.hash(&mut hasher);
+        }
+
+        // Hash target folder
+        self.target_folder.hash(&mut hasher);
+
+        format!("{:016x}", hasher.finish())
+    }
+}
+
 /// Persistent state for an organize job
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

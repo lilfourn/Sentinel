@@ -20,6 +20,9 @@
     "fs:allow-read-text-file",
     "fs:allow-stat",
     "macos-permissions:default",
-    "deep-link:default"
+    "deep-link:default",
+    "updater:default",
+    "dialog:default",
+    "process:allow-restart"
   ]
 }

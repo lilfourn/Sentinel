@@ -7,6 +7,7 @@ import { ConvexProviderWithClerk } from "convex/react-clerk";
 import { ConvexReactClient } from "convex/react";
 import { useAuth } from "@clerk/clerk-react";
 import { AuthSync } from "./components/auth/AuthSync";
+import { UsageSync } from "./components/UsageSync";
 import { queryClient } from "./lib/query-client";
 import App from "./App";
 
@@ -92,6 +93,7 @@ function ConvexClientProvider({ children }: { children: React.ReactNode }) {
   return (
     <ConvexProviderWithClerk client={convex} useAuth={useAuth}>
       <AuthSync />
+      <UsageSync />
       {children}
     </ConvexProviderWithClerk>
   );

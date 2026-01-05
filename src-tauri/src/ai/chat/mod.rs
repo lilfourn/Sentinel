@@ -12,7 +12,8 @@ pub mod context;
 pub mod tools;
 pub mod tools_terminal;
 
-pub use agent::{run_chat_agent, ConversationMessage};
+#[allow(unused_imports)]
+pub use agent::{run_chat_agent, ChatAgentResult, ConversationMessage, TokenUsage};
 #[allow(unused_imports)]
 pub use context::{hydrate_context, ContextItem, HydratedContext};
 #[allow(unused_imports)]

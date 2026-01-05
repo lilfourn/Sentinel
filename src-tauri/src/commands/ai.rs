@@ -1,6 +1,8 @@
 use crate::ai::{run_v6_hybrid_organization, ExpandableDetail, ProgressEvent, AnthropicClient, CredentialManager};
+use crate::billing::{BillingState, LimitCheckResult, LimitDenialReason};
 use crate::jobs::OrganizePlan;
 use std::path::Path;
+use tauri::State;
 
 /// Rename suggestion response
 #[derive(serde::Serialize)]
@@ -97,14 +99,38 @@ pub fn get_configured_providers() -> Vec<ProviderStatus> {
 }
 
 /// Get rename suggestion for a file
+///
+/// Requires authentication and checks billing limits before calling AI.
 #[tauri::command]
 pub async fn get_rename_suggestion(
+    billing: State<'_, BillingState>,
+    user_id: Option<String>,
     path: String,
     filename: String,
     extension: Option<String>,
     size: u64,
     content_preview: Option<String>,
 ) -> Result<RenameSuggestion, String> {
+    // Require authentication for AI operations
+    let user_id = user_id.ok_or_else(|| {
+        "Authentication required: Please sign in to use AI rename suggestions".to_string()
+    })?;
+
+    // Check rename limit before making API call
+    let subscription = billing.subscription_manager.get_cached_or_default(&user_id);
+    let usage = billing.usage_tracker.get_today_usage(&user_id)?;
+
+    let limit_result = billing.limit_enforcer.check_rename_limit(&subscription, &usage);
+    match limit_result {
+        LimitCheckResult::Denied { reason, .. } => {
+            return Err(format!("Rename limit exceeded: {}", reason));
+        }
+        LimitCheckResult::Allowed { remaining } => {
+            eprintln!("[AI Rename] User {} has {} renames remaining today", user_id, remaining);
+        }
+    }
+
+    // Make the API call
     let client = AnthropicClient::new();
 
     let suggested = client
@@ -115,6 +141,12 @@ pub async fn get_rename_suggestion(
             content_preview.as_deref(),
         )
         .await?;
+
+    // Record usage AFTER successful completion
+    if let Err(e) = billing.usage_tracker.increment_rename(&user_id) {
+        eprintln!("[AI Rename] Warning: Failed to record usage: {}", e);
+        // Don't fail the request, just log the error
+    }
 
     Ok(RenameSuggestion {
         original_name: filename,
@@ -260,8 +292,15 @@ pub async fn undo_rename(
 /// - **Cost**: GPT-5-nano is ~10x cheaper for bulk file analysis
 /// - **Quality**: Claude excels at rule creation and reasoning
 /// - **Context**: Entity-based context gives Claude better understanding
+///
+/// ## Billing
+/// - Requires authentication
+/// - Checks daily organize limit before execution
+/// - This is an expensive operation (uses both OpenAI and Claude APIs)
 #[tauri::command]
 pub async fn generate_organize_plan_hybrid(
+    billing: State<'_, BillingState>,
+    user_id: Option<String>,
     folder_path: String,
     user_request: String,
     app_handle: tauri::AppHandle,
@@ -269,6 +308,50 @@ pub async fn generate_organize_plan_hybrid(
     use tauri::Emitter;
     use crate::ai::grok::{FileAnalysis, openai_worker::{FileContent, calculate_worker_count, create_file_batches, run_parallel_workers}};
     use crate::ai::grok::document_parser::parse_document;
+
+    // === BILLING CHECK ===
+    // Require authentication for AI operations (this is an expensive operation)
+    let user_id = user_id.ok_or_else(|| {
+        "Authentication required: Please sign in to use AI organization".to_string()
+    })?;
+
+    // Check organize limit before making any API calls
+    let subscription = billing.subscription_manager.get_cached_or_default(&user_id);
+    let usage = billing.usage_tracker.get_today_usage(&user_id)?;
+
+    let limit_result = billing.limit_enforcer.check_organize_limit(&subscription, &usage);
+    match &limit_result {
+        LimitCheckResult::Denied { reason, upgrade_url } => {
+            let msg = match reason {
+                LimitDenialReason::OrganizeLimitExceeded { limit, used } => {
+                    format!(
+                        "Daily organization limit reached: {}/{} operations used. {}",
+                        used, limit,
+                        if upgrade_url.is_some() { "Upgrade to Pro for more." } else { "Limit resets at midnight UTC." }
+                    )
+                }
+                LimitDenialReason::SubscriptionInactive { status } => {
+                    format!("Subscription is {:?}. Please update your payment method.", status)
+                }
+                _ => format!("Organization not allowed: {}", reason),
+            };
+            return Err(msg);
+        }
+        LimitCheckResult::Allowed { remaining } => {
+            eprintln!(
+                "[AI Organize] User {} has {} organize operations remaining today (tier: {:?})",
+                user_id, remaining, subscription.tier
+            );
+        }
+    }
+
+    // Record usage BEFORE the operation (prevents race conditions with concurrent requests)
+    // If the operation fails, the user loses one use - this is intentional to prevent abuse
+    if let Err(e) = billing.usage_tracker.increment_organize(&user_id) {
+        eprintln!("[AI Organize] Warning: Failed to record usage upfront: {}", e);
+        // Continue anyway - better to allow the operation than fail due to usage tracking
+    }
+    // === END BILLING CHECK ===
 
     let path = Path::new(&folder_path);
     if !path.exists() || !path.is_dir() {
@@ -386,6 +469,356 @@ pub async fn generate_organize_plan_hybrid(
     run_v6_hybrid_organization(path, &user_request, all_analyses, emit, Some(progress_emit)).await
 }
 
+/// Batch rename suggestion for a folder
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchRenameSuggestion {
+    pub original_name: String,
+    pub suggested_name: String,
+    pub path: String,
+    pub selected: bool,
+}
+
+/// Batch rename result
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchRenameResponse {
+    pub suggestions: Vec<BatchRenameSuggestion>,
+    pub total_files: usize,
+    pub skipped_files: usize,
+}
+
+/// Get batch rename suggestions for all files in a folder (recursive)
+///
+/// Uses GPT-5-nano in parallel for fast, cost-effective analysis.
+/// Requires authentication and checks billing limits.
+/// Counts as a single rename operation for billing purposes.
+#[tauri::command]
+pub async fn get_batch_rename_suggestions(
+    billing: State<'_, BillingState>,
+    user_id: Option<String>,
+    folder_path: String,
+    app_handle: tauri::AppHandle,
+) -> Result<BatchRenameResponse, String> {
+    use tauri::Emitter;
+    use walkdir::WalkDir;
+    use crate::ai::grok::openai_worker::{FileContent, calculate_worker_count, create_file_batches, run_parallel_workers_with_progress};
+    use crate::ai::grok::document_parser::parse_document;
+
+    // Require authentication
+    let user_id = user_id.ok_or_else(|| {
+        "Authentication required: Please sign in to use AI batch rename".to_string()
+    })?;
+
+    // Check rename limit
+    let subscription = billing.subscription_manager.get_cached_or_default(&user_id);
+    let usage = billing.usage_tracker.get_today_usage(&user_id)?;
+
+    let limit_result = billing.limit_enforcer.check_rename_limit(&subscription, &usage);
+    match limit_result {
+        LimitCheckResult::Denied { reason, .. } => {
+            return Err(format!("Rename limit exceeded: {}", reason));
+        }
+        LimitCheckResult::Allowed { remaining } => {
+            eprintln!("[AI Batch Rename] User {} has {} renames remaining today", user_id, remaining);
+        }
+    }
+
+    let path = Path::new(&folder_path);
+    if !path.exists() || !path.is_dir() {
+        return Err(format!("Invalid folder path: {}", folder_path));
+    }
+
+    // Get OpenAI API key
+    let openai_key = CredentialManager::get_api_key("openai")
+        .or_else(|_| std::env::var("OPENAI_API_KEY"))
+        .or_else(|_| std::env::var("VITE_OPENAI_API_KEY"))
+        .map_err(|_| "OpenAI API key not configured. Set OPENAI_API_KEY environment variable.".to_string())?;
+
+    // Emit IMMEDIATE progress so UI shows activity
+    let _ = app_handle.emit("batch-rename-progress", serde_json::json!({
+        "stage": "scanning",
+        "current": 0,
+        "total": 0,
+        "message": "Starting folder scan...",
+    }));
+    eprintln!("[AI Batch Rename] Starting scan of: {}", folder_path);
+
+    // First pass: collect all file paths (fast, no parsing)
+    let mut file_paths: Vec<std::path::PathBuf> = Vec::new();
+    for entry in WalkDir::new(path)
+        .follow_links(false)
+        .max_depth(10) // Prevent infinite recursion
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if entry.path().is_file() {
+            file_paths.push(entry.path().to_path_buf());
+        }
+    }
+
+    let total_files = file_paths.len();
+    eprintln!("[AI Batch Rename] Found {} files to scan", total_files);
+
+    // Emit progress: found files
+    let _ = app_handle.emit("batch-rename-progress", serde_json::json!({
+        "stage": "scanning",
+        "current": 0,
+        "total": total_files,
+        "message": format!("Found {} files, extracting content...", total_files),
+    }));
+    if total_files == 0 {
+        return Ok(BatchRenameResponse {
+            suggestions: vec![],
+            total_files: 0,
+            skipped_files: 0,
+        });
+    }
+
+    // Second pass: PARALLEL extraction with timeouts using FuturesUnordered
+    use futures::stream::{FuturesUnordered, StreamExt};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    // 8 concurrent extraction tasks for optimal I/O parallelism
+    let extraction_semaphore = Arc::new(tokio::sync::Semaphore::new(8));
+    let mut extraction_futures = FuturesUnordered::new();
+
+    for entry_path in file_paths.into_iter() {
+        let sem = extraction_semaphore.clone();
+        let filename = entry_path.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let extension = entry_path.extension()
+            .map(|e| e.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        extraction_futures.push(async move {
+            // Acquire semaphore permit (limits concurrent extractions)
+            let _permit = sem.acquire().await.expect("Semaphore closed");
+
+            let path_clone = entry_path.clone();
+            let filename_clone = filename.clone();
+            let content = match tokio::time::timeout(
+                Duration::from_secs(10),
+                tokio::task::spawn_blocking(move || {
+                    parse_document(&path_clone).map(|doc| doc.text)
+                })
+            ).await {
+                Ok(Ok(Ok(text))) => text,
+                Ok(Ok(Err(_))) | Ok(Err(_)) | Err(_) => {
+                    format!("File: {}", filename_clone)
+                }
+            };
+
+            FileContent {
+                path: entry_path,
+                filename,
+                content,
+                extension,
+            }
+        });
+    }
+
+    // Collect results as they complete (parallel, not waiting for order)
+    let mut file_contents: Vec<FileContent> = Vec::new();
+    let mut completed = 0;
+    while let Some(result) = extraction_futures.next().await {
+        file_contents.push(result);
+        completed += 1;
+
+        // Update progress every 5 files
+        if completed % 5 == 0 || completed == total_files {
+            let _ = app_handle.emit("batch-rename-progress", serde_json::json!({
+                "stage": "scanning",
+                "current": completed,
+                "total": total_files,
+                "message": format!("Extracted {} of {} files...", completed, total_files),
+            }));
+        }
+    }
+
+    eprintln!("[AI Batch Rename] Parallel extraction complete: {} files in parallel", file_contents.len());
+
+    // Emit progress - extraction complete, starting analysis
+    let _ = app_handle.emit("batch-rename-progress", serde_json::json!({
+        "stage": "scanning",
+        "current": total_files,
+        "total": total_files,
+        "message": format!("Starting GPT-5-nano analysis..."),
+    }));
+
+    // Create batches and run parallel workers (5 files per batch)
+    let batch_size = 5;
+    let batches = create_file_batches(file_contents, batch_size);
+    let worker_count = calculate_worker_count(total_files);
+    let batch_count = batches.len();
+
+    eprintln!(
+        "[AI Batch Rename] Running {} parallel workers on {} batches ({} files)",
+        worker_count, batch_count, total_files
+    );
+
+    // Emit progress - starting analysis
+    let _ = app_handle.emit("batch-rename-progress", serde_json::json!({
+        "stage": "analyzing",
+        "current": 0,
+        "total": batch_count,
+        "message": format!("Analyzing with {} parallel workers...", worker_count),
+    }));
+
+    // Create progress channel for real-time updates
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel::<(usize, usize)>(32);
+
+    // Spawn task to emit progress events as batches complete
+    let progress_handle = app_handle.clone();
+    let progress_task = tokio::spawn(async move {
+        while let Some((completed, total)) = progress_rx.recv().await {
+            let _ = progress_handle.emit("batch-rename-progress", serde_json::json!({
+                "stage": "analyzing",
+                "current": completed,
+                "total": total,
+                "message": format!("Analyzed {} of {} batches...", completed, total),
+            }));
+        }
+    });
+
+    // Run parallel workers with progress tracking
+    let results = run_parallel_workers_with_progress(openai_key, batches, worker_count, Some(progress_tx)).await;
+
+    // Wait for progress task to finish
+    drop(progress_task);
+
+    // Collect results
+    let mut suggestions: Vec<BatchRenameSuggestion> = Vec::new();
+    let mut skipped = 0;
+    let mut error_count = 0;
+
+    for result in results {
+        match result {
+            Ok(analyses) => {
+                for analysis in analyses {
+                    // Only include if name actually changed
+                    if analysis.new_name != analysis.old_name && !analysis.new_name.is_empty() {
+                        suggestions.push(BatchRenameSuggestion {
+                            original_name: analysis.old_name,
+                            suggested_name: analysis.new_name,
+                            path: analysis.file_path,
+                            selected: true,
+                        });
+                    } else {
+                        skipped += 1;
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("[AI Batch Rename] Batch error: {}", e);
+                error_count += 1;
+            }
+        }
+    }
+
+    // Record usage AFTER successful completion (counts as one operation)
+    if let Err(e) = billing.usage_tracker.increment_rename(&user_id) {
+        eprintln!("[AI Batch Rename] Warning: Failed to record usage: {}", e);
+    }
+
+    // Emit completion
+    let _ = app_handle.emit("batch-rename-progress", serde_json::json!({
+        "stage": "complete",
+        "current": total_files,
+        "total": total_files,
+        "message": format!("Found {} rename suggestions", suggestions.len()),
+    }));
+
+    eprintln!(
+        "[AI Batch Rename] Complete: {} suggestions, {} skipped, {} batch errors",
+        suggestions.len(), skipped, error_count
+    );
+
+    Ok(BatchRenameResponse {
+        suggestions,
+        total_files,
+        skipped_files: skipped,
+    })
+}
+
+/// Apply batch renames
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchRenameItem {
+    pub path: String,
+    pub new_name: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchRenameResult {
+    pub success_count: usize,
+    pub failed_count: usize,
+    pub results: Vec<RenameResult>,
+}
+
+#[tauri::command]
+pub async fn apply_batch_rename(
+    items: Vec<BatchRenameItem>,
+) -> Result<BatchRenameResult, String> {
+    let mut results: Vec<RenameResult> = Vec::new();
+    let mut success_count = 0;
+    let mut failed_count = 0;
+
+    for item in items {
+        // Validate filename
+        if let Err(e) = validate_filename(&item.new_name) {
+            eprintln!("[Batch Rename] Invalid filename {}: {}", item.new_name, e);
+            failed_count += 1;
+            continue;
+        }
+
+        let old = std::path::Path::new(&item.path);
+        if !old.exists() {
+            failed_count += 1;
+            continue;
+        }
+
+        // Skip symlinks
+        if old.is_symlink() {
+            failed_count += 1;
+            continue;
+        }
+
+        let parent = match old.parent() {
+            Some(p) => p,
+            None => {
+                failed_count += 1;
+                continue;
+            }
+        };
+        let new_path = parent.join(&item.new_name);
+
+        match std::fs::rename(&old, &new_path) {
+            Ok(()) => {
+                results.push(RenameResult {
+                    success: true,
+                    old_path: item.path,
+                    new_path: new_path.to_string_lossy().to_string(),
+                });
+                success_count += 1;
+            }
+            Err(e) => {
+                eprintln!("[Batch Rename] Failed to rename {}: {}", item.path, e);
+                failed_count += 1;
+            }
+        }
+    }
+
+    Ok(BatchRenameResult {
+        success_count,
+        failed_count,
+        results,
+    })
+}
+
 /// Simplify folder structure when content is already organized
 ///
 /// This command is called when the user accepts the "simplify folder structure"
@@ -395,13 +828,56 @@ pub async fn generate_organize_plan_hybrid(
 /// - Flattening deeply nested hierarchies (depth > 3)
 /// - Consolidating sparse folders (< 5 files each)
 /// - Shortening verbose path names
+///
+/// ## Billing
+/// - Requires authentication
+/// - Counts as an organize operation (same limits apply)
 #[tauri::command]
 pub async fn generate_simplification_plan(
+    billing: State<'_, BillingState>,
+    user_id: Option<String>,
     folder_path: String,
     app_handle: tauri::AppHandle,
 ) -> Result<OrganizePlan, String> {
     use crate::ai::v2::run_simplification_loop;
     use tauri::Emitter;
+
+    // === BILLING CHECK ===
+    let user_id = user_id.ok_or_else(|| {
+        "Authentication required: Please sign in to use AI simplification".to_string()
+    })?;
+
+    let subscription = billing.subscription_manager.get_cached_or_default(&user_id);
+    let usage = billing.usage_tracker.get_today_usage(&user_id)?;
+
+    let limit_result = billing.limit_enforcer.check_organize_limit(&subscription, &usage);
+    match &limit_result {
+        LimitCheckResult::Denied { reason, upgrade_url } => {
+            let msg = match reason {
+                LimitDenialReason::OrganizeLimitExceeded { limit, used } => {
+                    format!(
+                        "Daily organization limit reached: {}/{} operations used. {}",
+                        used, limit,
+                        if upgrade_url.is_some() { "Upgrade to Pro for more." } else { "Limit resets at midnight UTC." }
+                    )
+                }
+                _ => format!("Simplification not allowed: {}", reason),
+            };
+            return Err(msg);
+        }
+        LimitCheckResult::Allowed { remaining } => {
+            eprintln!(
+                "[AI Simplify] User {} has {} organize operations remaining today",
+                user_id, remaining
+            );
+        }
+    }
+
+    // Record usage BEFORE the operation
+    if let Err(e) = billing.usage_tracker.increment_organize(&user_id) {
+        eprintln!("[AI Simplify] Warning: Failed to record usage: {}", e);
+    }
+    // === END BILLING CHECK ===
 
     let path = Path::new(&folder_path);
     if !path.exists() || !path.is_dir() {

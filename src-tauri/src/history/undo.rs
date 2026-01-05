@@ -355,9 +355,11 @@ pub fn collect_undo_operations(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
     use crate::history::entry::FileChecksum;
     use std::collections::HashMap;
 
+    #[allow(dead_code)]
     fn create_test_op(source: &str, dest: &str) -> HistoryOperation {
         HistoryOperation {
             id: "op-1".to_string(),

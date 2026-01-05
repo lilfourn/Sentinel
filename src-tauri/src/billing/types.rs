@@ -51,6 +51,10 @@ pub struct DailyLimits {
     pub sonnet_requests: u32,
     pub opus_requests: u32,
     pub extended_thinking_requests: u32,
+    /// AI organize operations (expensive - uses GPT + Claude)
+    pub organize_requests: u32,
+    /// AI rename operations (uses Haiku)
+    pub rename_requests: u32,
 }
 
 impl DailyLimits {
@@ -62,12 +66,16 @@ impl DailyLimits {
                 sonnet_requests: 0,
                 opus_requests: 0,
                 extended_thinking_requests: 0,
+                organize_requests: 1,  // Free users get 1 organize/day
+                rename_requests: 10,   // Free users get 10 renames/day
             },
             SubscriptionTier::Pro => Self {
                 haiku_requests: 300,
                 sonnet_requests: 50,
                 opus_requests: 10,
                 extended_thinking_requests: 5,
+                organize_requests: 20,  // Pro users get 20 organizes/day
+                rename_requests: 100,   // Pro users get 100 renames/day
             },
         }
     }
@@ -202,6 +210,10 @@ pub struct DailyUsage {
     pub extended_thinking_requests: u32,
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
+    /// AI organize operations
+    pub organize_requests: u32,
+    /// AI rename operations
+    pub rename_requests: u32,
 }
 
 impl DailyUsage {
@@ -313,6 +325,18 @@ pub enum LimitDenialReason {
         input_percent: u8,
         output_percent: u8,
     },
+    /// Daily organize limit exceeded
+    #[serde(rename = "organizeLimitExceeded")]
+    OrganizeLimitExceeded {
+        limit: u32,
+        used: u32,
+    },
+    /// Daily rename limit exceeded
+    #[serde(rename = "renameLimitExceeded")]
+    RenameLimitExceeded {
+        limit: u32,
+        used: u32,
+    },
 }
 
 impl std::fmt::Display for LimitDenialReason {
@@ -360,6 +384,20 @@ impl std::fmt::Display for LimitDenialReason {
                     f,
                     "Approaching token quota: {}% input, {}% output used",
                     input_percent, output_percent
+                )
+            }
+            Self::OrganizeLimitExceeded { limit, used } => {
+                write!(
+                    f,
+                    "Daily organize limit exceeded: {}/{} operations used",
+                    used, limit
+                )
+            }
+            Self::RenameLimitExceeded { limit, used } => {
+                write!(
+                    f,
+                    "Daily rename limit exceeded: {}/{} operations used",
+                    used, limit
                 )
             }
         }

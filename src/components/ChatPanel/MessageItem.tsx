@@ -199,8 +199,8 @@ export const MessageItem = memo(function MessageItem({ message }: MessageItemPro
             className={`
               flex items-center gap-2 text-xs transition-colors
               ${message.isThinking
-                ? 'text-purple-400 cursor-default'
-                : 'text-purple-400 hover:text-purple-300 cursor-pointer'
+                ? 'text-orange-500 cursor-default'
+                : 'text-orange-500 hover:text-orange-400 cursor-pointer'
               }
             `}
             disabled={message.isThinking}
@@ -218,7 +218,7 @@ export const MessageItem = memo(function MessageItem({ message }: MessageItemPro
                 </span>
                 <Brain size={12} />
                 <span>Extended thinking</span>
-                <span className="text-purple-500/60 ml-1">
+                <span className="text-orange-500/60 ml-1">
                   ({message.thinking?.length.toLocaleString()} chars)
                 </span>
               </>
@@ -232,8 +232,8 @@ export const MessageItem = memo(function MessageItem({ message }: MessageItemPro
               ${isThinkingExpanded && hasThinking ? 'max-h-64 opacity-100 mt-2' : 'max-h-0 opacity-0'}
             `}
           >
-            <div className="p-3 bg-purple-900/20 border border-purple-500/20 rounded-lg">
-              <pre className="text-xs text-purple-200/80 whitespace-pre-wrap font-mono overflow-auto max-h-56">
+            <div className="p-3 bg-orange-900/20 border border-orange-500/20 rounded-lg">
+              <pre className="text-xs text-orange-200/80 whitespace-pre-wrap font-mono overflow-auto max-h-56">
                 {message.thinking}
               </pre>
             </div>

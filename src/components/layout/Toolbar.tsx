@@ -11,6 +11,7 @@ import {
   Settings,
   Bot,
   Crown,
+  History,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useNavigationStore } from '../../stores/navigation-store';
@@ -22,9 +23,20 @@ import type { ViewMode } from '../../types/file';
 interface ToolbarProps {
   onOpenSettings?: () => void;
   onToggleChat?: () => void;
+  onToggleHistory?: () => void;
+  historyHasContent?: boolean;
+  historySessionCount?: number;
+  historyPanelOpen?: boolean;
 }
 
-export function Toolbar({ onOpenSettings, onToggleChat }: ToolbarProps) {
+export function Toolbar({
+  onOpenSettings,
+  onToggleChat,
+  onToggleHistory,
+  historyHasContent,
+  historySessionCount,
+  historyPanelOpen,
+}: ToolbarProps) {
   const {
     historyIndex,
     history,
@@ -143,6 +155,22 @@ export function Toolbar({ onOpenSettings, onToggleChat }: ToolbarProps) {
         title="Chat"
       >
         <Bot size={16} />
+      </button>
+
+      {/* History button */}
+      <button
+        onClick={onToggleHistory}
+        className={cn(
+          'p-1.5 rounded-md transition-colors',
+          historyPanelOpen
+            ? 'bg-orange-100 dark:bg-orange-900/30 text-orange-500 dark:text-orange-400'
+            : historyHasContent
+              ? 'text-orange-500 dark:text-orange-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+              : 'text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+        )}
+        title={historyHasContent ? `History (${historySessionCount} sessions)` : 'No history for this folder'}
+      >
+        <History size={16} />
       </button>
 
       {/* Plan badge */}

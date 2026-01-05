@@ -8,7 +8,7 @@ interface PhaseIndicatorProps {
   className?: string;
 }
 
-/** All phases in order */
+/** All phases in order (forward workflow) */
 const PHASES: OrganizePhase[] = [
   'indexing',
   'planning',
@@ -20,6 +20,7 @@ const PHASES: OrganizePhase[] = [
 /** Human-readable phase labels */
 const PHASE_LABELS: Record<OrganizePhase, string> = {
   idle: 'Idle',
+  awaiting_instruction: 'Ready',
   indexing: 'Indexing',
   planning: 'Planning',
   simulation: 'Preview',
@@ -33,11 +34,24 @@ const PHASE_LABELS: Record<OrganizePhase, string> = {
 /**
  * Visual phase progress indicator showing dots for each phase.
  * Current phase pulses orange, completed phases are green, pending are gray.
+ * Rolling back shows a special red pulsing indicator.
  */
 export function PhaseIndicator({ currentPhase, className }: PhaseIndicatorProps) {
-  // Don't show for terminal states
-  if (currentPhase === 'idle' || currentPhase === 'complete' || currentPhase === 'failed') {
+  // Don't show for terminal or idle states
+  if (currentPhase === 'idle' || currentPhase === 'awaiting_instruction' || currentPhase === 'complete' || currentPhase === 'failed') {
     return null;
+  }
+
+  // Special handling for rolling_back - show red pulsing indicator
+  if (currentPhase === 'rolling_back') {
+    return (
+      <div className={cn('flex items-center gap-1', className)}>
+        <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.5)]" />
+        <span className="ml-2 text-[10px] font-medium text-red-400 uppercase tracking-wider">
+          {PHASE_LABELS[currentPhase]}
+        </span>
+      </div>
+    );
   }
 
   const currentIndex = PHASES.indexOf(currentPhase);

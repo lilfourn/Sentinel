@@ -71,6 +71,40 @@ export interface RollbackProgressPayload {
   currentOperationId?: string;
 }
 
+// ============================================================================
+// Type Guards for Runtime Validation
+// ============================================================================
+
+const VALID_CONFLICT_TYPES = ['name_collision', 'missing_source', 'permission_denied'] as const;
+
+/**
+ * Runtime type guard for IndexingProgressPayload.
+ */
+export function isIndexingProgressPayload(value: unknown): value is IndexingProgressPayload {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.scanned === 'number' &&
+    typeof v.total === 'number' &&
+    typeof v.currentPath === 'string'
+  );
+}
+
+/**
+ * Runtime type guard for ConflictPayload.
+ */
+export function isConflictPayload(value: unknown): value is ConflictPayload {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.operationId === 'string' &&
+    typeof v.path === 'string' &&
+    typeof v.conflictType === 'string' &&
+    VALID_CONFLICT_TYPES.includes(v.conflictType as typeof VALID_CONFLICT_TYPES[number]) &&
+    (v.message === undefined || typeof v.message === 'string')
+  );
+}
+
 /**
  * DiffNode represents a node in the before/after diff tree.
  */

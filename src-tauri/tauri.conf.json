@@ -26,12 +26,13 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://*.convex.cloud https://api.anthropic.com https://api.stripe.com https://*.clerk.dev https://*.clerk.accounts.dev wss://*.convex.cloud; img-src 'self' data: https:; font-src 'self' data:"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://*.convex.cloud https://api.anthropic.com https://api.stripe.com https://*.clerk.dev https://*.clerk.accounts.dev https://clerk.app-sentinel.dev wss://*.convex.cloud https://github.com https://api.github.com https://raw.githubusercontent.com; img-src 'self' data: https:; font-src 'self' data:"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -53,6 +54,12 @@
       "desktop": {
         "schemes": ["sentinel"]
       }
+    },
+    "updater": {
+      "endpoints": [
+        "https://github.com/lukefournier/sentinel/releases/latest/download/latest.json"
+      ],
+      "pubkey": "RWR2kmM0j3kdEE40qVMpjo4M4m05VaGVzKfJEjgsRbz/f5BI91WLHkVt"
     }
   }
 }

@@ -20,6 +20,17 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::time::sleep;
+use tracing::{debug, info, warn};
+
+/// Helper macro to emit events with proper error logging
+/// Logs failures but doesn't propagate errors (we don't want to crash streams on emit failures)
+macro_rules! emit_logged {
+    ($app:expr, $event:expr, $payload:expr) => {
+        if let Err(e) = $app.emit($event, $payload) {
+            warn!(event = $event, error = %e, "Failed to emit event");
+        }
+    };
+}
 
 /// Maximum ReAct loop iterations
 const MAX_ITERATIONS: usize = 8;
@@ -32,6 +43,13 @@ const MAX_TOKENS: u32 = 16000;
 
 /// Extended thinking budget (max thinking tokens when enabled)
 const THINKING_BUDGET: u32 = 10000;
+
+/// Maximum buffer sizes to prevent OOM from malformed API responses
+const MAX_SSE_BUFFER_SIZE: usize = 1_000_000; // 1MB for SSE line buffer
+const MAX_TEXT_BLOCK_SIZE: usize = 500_000; // 500KB for text accumulation
+const MAX_THINKING_BLOCK_SIZE: usize = 1_000_000; // 1MB for thinking (can be large)
+const MAX_TOOL_INPUT_SIZE: usize = 100_000; // 100KB for tool input JSON
+const MAX_FINAL_RESPONSE_SIZE: usize = 2_000_000; // 2MB for final accumulated response
 
 /// Anthropic API URL
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -49,12 +67,28 @@ pub struct ConversationMessage {
     pub context_items: Vec<ContextItem>,
 }
 
+/// Token usage tracking from API response
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub cache_read_input_tokens: u64,
+}
+
+/// Chat agent result with response and accurate token usage
+#[derive(Debug)]
+pub struct ChatAgentResult {
+    pub response: String,
+    pub usage: TokenUsage,
+}
+
 /// Streaming event types from Anthropic API
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 enum StreamEvent {
     #[serde(rename = "message_start")]
-    MessageStart { #[allow(dead_code)] message: Value },
+    MessageStart { message: Value },
     #[serde(rename = "content_block_start")]
     ContentBlockStart { #[allow(dead_code)] index: usize, content_block: Value },
     #[serde(rename = "content_block_delta")]
@@ -62,7 +96,7 @@ enum StreamEvent {
     #[serde(rename = "content_block_stop")]
     ContentBlockStop { #[allow(dead_code)] index: usize },
     #[serde(rename = "message_delta")]
-    MessageDelta { delta: Value, #[allow(dead_code)] usage: Option<Value> },
+    MessageDelta { delta: Value, usage: Option<Value> },
     #[serde(rename = "message_stop")]
     MessageStop,
     #[serde(rename = "ping")]
@@ -82,6 +116,9 @@ enum StreamEvent {
 /// * `extended_thinking` - Whether to enable extended thinking mode
 /// * `abort_flag` - Optional flag to signal abort request
 ///
+/// # Returns
+/// * `ChatAgentResult` - Contains the response text and accurate token usage from API
+///
 /// # Events Emitted
 /// * `chat:thought` - Tool usage
 /// * `chat:token` - Response chunk (streamed)
@@ -97,9 +134,11 @@ pub async fn run_chat_agent(
     history: &[ConversationMessage],
     extended_thinking: bool,
     abort_flag: Option<Arc<AtomicBool>>,
-) -> Result<String, String> {
-    eprintln!("[ChatAgent] Starting with model: {}", model);
-    eprintln!("[ChatAgent] Context items: {}", context_items.len());
+) -> Result<ChatAgentResult, String> {
+    info!(model = model, context_items = context_items.len(), "Starting chat agent");
+
+    // Track total token usage across all iterations
+    let mut total_usage = TokenUsage::default();
 
     // Helper to check if abort was requested
     let is_aborted = || -> bool {
@@ -111,9 +150,12 @@ pub async fn run_chat_agent(
 
     // Check abort at start
     if is_aborted() {
-        eprintln!("[ChatAgent] Aborted before starting");
-        app.emit("chat:aborted", json!({"reason": "User requested abort"})).ok();
-        return Ok(String::new());
+        info!("Chat aborted before starting");
+        emit_logged!(app, "chat:aborted", json!({"reason": "User requested abort"}));
+        return Ok(ChatAgentResult {
+            response: String::new(),
+            usage: total_usage,
+        });
     }
 
     // 1. Get API key
@@ -125,7 +167,7 @@ pub async fn run_chat_agent(
     // 3. Collect previous context references from history
     let previous_context = collect_previous_context(history);
     if !previous_context.is_empty() {
-        eprintln!("[ChatAgent] Found previous context from conversation history");
+        debug!("Found previous context from conversation history");
     }
 
     // 4. Build system prompt with previous context
@@ -149,16 +191,15 @@ pub async fn run_chat_agent(
     for iteration in 0..MAX_ITERATIONS {
         // Check abort at start of each iteration
         if is_aborted() {
-            eprintln!("[ChatAgent] Aborted at iteration {}", iteration + 1);
-            app.emit("chat:aborted", json!({"reason": "User requested abort"})).ok();
-            return Ok(final_response);
+            info!(iteration = iteration + 1, "Chat aborted");
+            emit_logged!(app, "chat:aborted", json!({"reason": "User requested abort"}));
+            return Ok(ChatAgentResult {
+                response: final_response,
+                usage: total_usage,
+            });
         }
 
-        eprintln!(
-            "[ChatAgent] Iteration {}/{}",
-            iteration + 1,
-            MAX_ITERATIONS
-        );
+        debug!(iteration = iteration + 1, max = MAX_ITERATIONS, "ReAct iteration");
 
         // Rate limiting
         if iteration > 0 {
@@ -181,7 +222,7 @@ pub async fn run_chat_agent(
                 "type": "enabled",
                 "budget_tokens": THINKING_BUDGET
             });
-            eprintln!("[ChatAgent] Extended thinking enabled with {} budget tokens", THINKING_BUDGET);
+            debug!(budget_tokens = THINKING_BUDGET, "Extended thinking enabled");
         }
 
         // Send streaming request
@@ -201,9 +242,15 @@ pub async fn run_chat_agent(
             return Err(format!("API error {}: {}", status, error_text));
         }
 
-        // Process streaming response
-        let (stop_reason, has_tool_use, assistant_content, tool_results, _iteration_text) =
+        // Process streaming response (returns usage for this iteration)
+        let (stop_reason, has_tool_use, assistant_content, tool_results, _iteration_text, iteration_usage) =
             process_stream(app, response, &mut final_response).await?;
+
+        // Accumulate token usage from this iteration
+        total_usage.input_tokens += iteration_usage.input_tokens;
+        total_usage.output_tokens += iteration_usage.output_tokens;
+        total_usage.cache_creation_input_tokens += iteration_usage.cache_creation_input_tokens;
+        total_usage.cache_read_input_tokens += iteration_usage.cache_read_input_tokens;
 
         // Add assistant message to history
         messages.push(json!({
@@ -221,10 +268,7 @@ pub async fn run_chat_agent(
 
         // Check stop condition
         if stop_reason == Some("end_turn".to_string()) && !has_tool_use {
-            eprintln!(
-                "[ChatAgent] Completed after {} iterations",
-                iteration + 1
-            );
+            info!(iterations = iteration + 1, "Chat completed");
             break;
         }
     }
@@ -233,15 +277,27 @@ pub async fn run_chat_agent(
     app.emit("chat:complete", json!({}))
         .map_err(|e| format!("Event emit failed: {}", e))?;
 
-    Ok(final_response)
+    info!(
+        input_tokens = total_usage.input_tokens,
+        output_tokens = total_usage.output_tokens,
+        cache_created = total_usage.cache_creation_input_tokens,
+        cache_read = total_usage.cache_read_input_tokens,
+        "Chat agent finished"
+    );
+
+    Ok(ChatAgentResult {
+        response: final_response,
+        usage: total_usage,
+    })
 }
 
 /// Process the streaming response from Anthropic API
+/// Returns: (stop_reason, has_tool_use, assistant_content, tool_results, iteration_text, usage)
 async fn process_stream(
     app: &AppHandle,
     response: reqwest::Response,
     final_response: &mut String,
-) -> Result<(Option<String>, bool, Vec<Value>, Vec<Value>, String), String> {
+) -> Result<(Option<String>, bool, Vec<Value>, Vec<Value>, String, TokenUsage), String> {
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
     let mut stop_reason: Option<String> = None;
@@ -249,6 +305,9 @@ async fn process_stream(
     let mut assistant_content: Vec<Value> = Vec::new();
     let mut tool_results: Vec<Value> = Vec::new();
     let mut iteration_text = String::new();
+
+    // Track token usage from API response
+    let mut usage = TokenUsage::default();
 
     // Track current content blocks being built
     let mut current_text_block: Option<String> = None;
@@ -259,6 +318,14 @@ async fn process_stream(
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(|e| format!("Stream error: {}", e))?;
         let chunk_str = String::from_utf8_lossy(&chunk);
+
+        // Bounded buffer check to prevent OOM from malformed responses
+        if buffer.len() + chunk_str.len() > MAX_SSE_BUFFER_SIZE {
+            return Err(format!(
+                "SSE buffer exceeded maximum size of {} bytes (possible malformed response)",
+                MAX_SSE_BUFFER_SIZE
+            ));
+        }
         buffer.push_str(&chunk_str);
 
         // Process complete lines (SSE format)
@@ -290,7 +357,7 @@ async fn process_stream(
                                     "thinking" => {
                                         // Extended thinking block started
                                         current_thinking_block = Some(String::new());
-                                        eprintln!("[ChatAgent] Extended thinking started");
+                                        debug!("Extended thinking started");
 
                                         // Emit thinking started event
                                         app.emit(
@@ -349,18 +416,18 @@ async fn process_stream(
                                             delta.get("thinking").and_then(|t| t.as_str())
                                         {
                                             // Emit thinking chunk for streaming
-                                            app.emit(
-                                                "chat:thinking",
-                                                json!({
-                                                    "status": "streaming",
-                                                    "chunk": thinking,
-                                                }),
-                                            )
-                                            .ok();
+                                            emit_logged!(app, "chat:thinking", json!({
+                                                "status": "streaming",
+                                                "chunk": thinking,
+                                            }));
 
-                                            // Accumulate thinking
+                                            // Accumulate thinking with bounds check
                                             if let Some(ref mut block) = current_thinking_block {
-                                                block.push_str(thinking);
+                                                if block.len() + thinking.len() <= MAX_THINKING_BLOCK_SIZE {
+                                                    block.push_str(thinking);
+                                                } else {
+                                                    warn!(max_size = MAX_THINKING_BLOCK_SIZE, "Thinking block truncated");
+                                                }
                                             }
                                         }
                                     }
@@ -380,14 +447,20 @@ async fn process_stream(
                                         if let Some(text) =
                                             delta.get("text").and_then(|t| t.as_str())
                                         {
-                                            // Emit text chunk for streaming
-                                            app.emit("chat:token", json!({ "chunk": text })).ok();
+                                            // Emit text chunk for streaming (with logging on failure)
+                                            emit_logged!(app, "chat:token", json!({ "chunk": text }));
 
-                                            // Accumulate text
+                                            // Accumulate text with bounds checks
                                             if let Some(ref mut block) = current_text_block {
-                                                block.push_str(text);
+                                                if block.len() + text.len() <= MAX_TEXT_BLOCK_SIZE {
+                                                    block.push_str(text);
+                                                }
                                             }
-                                            final_response.push_str(text);
+                                            if final_response.len() + text.len() <= MAX_FINAL_RESPONSE_SIZE {
+                                                final_response.push_str(text);
+                                            } else {
+                                                warn!(max_size = MAX_FINAL_RESPONSE_SIZE, "Response truncated");
+                                            }
                                             iteration_text.push_str(text);
                                         }
                                     }
@@ -396,8 +469,12 @@ async fn process_stream(
                                             if let Some(partial) =
                                                 delta.get("partial_json").and_then(|p| p.as_str())
                                             {
-                                                // Accumulate JSON string fragments
-                                                input_json.push_str(partial);
+                                                // Accumulate JSON string fragments with bounds check
+                                                if input_json.len() + partial.len() <= MAX_TOOL_INPUT_SIZE {
+                                                    input_json.push_str(partial);
+                                                } else {
+                                                    warn!(max_size = MAX_TOOL_INPUT_SIZE, "Tool input truncated");
+                                                }
                                             }
                                         }
                                     }
@@ -408,10 +485,7 @@ async fn process_stream(
                                 // Finalize thinking block
                                 if let Some(thinking) = current_thinking_block.take() {
                                     let sig = thinking_signature.take();
-                                    eprintln!(
-                                        "[ChatAgent] Extended thinking completed: {} chars",
-                                        thinking.len()
-                                    );
+                                    debug!(chars = thinking.len(), "Extended thinking completed");
 
                                     // Emit thinking completed event
                                     app.emit(
@@ -447,12 +521,12 @@ async fn process_stream(
                                         json!({})
                                     } else {
                                         serde_json::from_str(&input_json).unwrap_or_else(|e| {
-                                            eprintln!("[ChatAgent] Failed to parse tool input JSON: {} - raw: {}", e, &input_json[..input_json.len().min(200)]);
+                                            warn!(error = %e, "Failed to parse tool input JSON");
                                             json!({})
                                         })
                                     };
 
-                                    eprintln!("[ChatAgent] Tool '{}' input parsed: {:?}", name, tool_input);
+                                    debug!(tool = name, input = ?tool_input, "Tool input parsed");
 
                                     // Add to assistant content
                                     assistant_content.push(json!({
@@ -500,11 +574,33 @@ async fn process_stream(
                                     }));
                                 }
                             }
-                            StreamEvent::MessageDelta { delta, .. } => {
+                            StreamEvent::MessageStart { message } => {
+                                // Extract input token usage from message_start
+                                if let Some(msg_usage) = message.get("usage") {
+                                    if let Some(input) = msg_usage.get("input_tokens").and_then(|t| t.as_u64()) {
+                                        usage.input_tokens = input;
+                                    }
+                                    if let Some(cache_creation) = msg_usage.get("cache_creation_input_tokens").and_then(|t| t.as_u64()) {
+                                        usage.cache_creation_input_tokens = cache_creation;
+                                    }
+                                    if let Some(cache_read) = msg_usage.get("cache_read_input_tokens").and_then(|t| t.as_u64()) {
+                                        usage.cache_read_input_tokens = cache_read;
+                                    }
+                                }
+                            }
+                            StreamEvent::MessageDelta { delta, usage: delta_usage } => {
+                                // Extract stop reason
                                 if let Some(reason) =
                                     delta.get("stop_reason").and_then(|r| r.as_str())
                                 {
                                     stop_reason = Some(reason.to_string());
+                                }
+
+                                // Extract output token usage from message_delta
+                                if let Some(msg_usage) = delta_usage {
+                                    if let Some(output) = msg_usage.get("output_tokens").and_then(|t| t.as_u64()) {
+                                        usage.output_tokens = output;
+                                    }
                                 }
                             }
                             StreamEvent::MessageStop => {
@@ -534,6 +630,7 @@ async fn process_stream(
         assistant_content,
         tool_results,
         iteration_text,
+        usage,
     ))
 }
 
