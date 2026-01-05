@@ -219,45 +219,6 @@ impl AnthropicClient {
         .await
     }
 
-    /// Suggest naming conventions for a folder using Claude Haiku (fast)
-    pub async fn suggest_naming_conventions(
-        &self,
-        folder_path: &str,
-        file_listing: &str,
-    ) -> Result<super::naming::NamingConventionSuggestions, String> {
-        let user_prompt = super::prompts::build_naming_convention_prompt(folder_path, file_listing);
-
-        eprintln!("[AI] Suggesting naming conventions for: {}", folder_path);
-
-        let response = self
-            .send_message(
-                ClaudeModel::Haiku,
-                super::prompts::NAMING_CONVENTION_SYSTEM_PROMPT,
-                &user_prompt,
-                1024,
-            )
-            .await?;
-
-        eprintln!("[AI] Naming conventions response length: {} chars", response.len());
-
-        // Parse the JSON response
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct RawResponse {
-            total_files_analyzed: u32,
-            suggestions: Vec<super::naming::NamingConvention>,
-        }
-
-        let raw: RawResponse = super::json_parser::extract_json(&response)
-            .map_err(|e| format!("Failed to parse naming conventions: {}", e))?;
-
-        Ok(super::naming::NamingConventionSuggestions {
-            folder_path: folder_path.to_string(),
-            total_files_analyzed: raw.total_files_analyzed,
-            suggestions: raw.suggestions,
-        })
-    }
-
     /// Validate API key by making a minimal request
     pub async fn validate_api_key(api_key: &str) -> Result<bool, String> {
         let client = Client::builder()

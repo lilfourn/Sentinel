@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, memo } from "react";
 import {
   History,
   Undo2,
@@ -119,7 +119,8 @@ interface HistoryItemProps {
   formatTimeAgo: (timestamp: number) => string;
 }
 
-function HistoryItem({
+/** Memoized history item - only re-renders when item data changes */
+const HistoryItem = memo(function HistoryItem({
   item,
   onUndo,
   onRemove,
@@ -191,7 +192,17 @@ function HistoryItem({
       </div>
     </div>
   );
-}
+}, (prev, next) => {
+  // Custom comparison - only re-render if item data changed
+  return (
+    prev.item.id === next.item.id &&
+    prev.item.undone === next.item.undone &&
+    prev.item.canUndo === next.item.canUndo &&
+    prev.item.newName === next.item.newName &&
+    prev.item.originalName === next.item.originalName &&
+    prev.item.folderName === next.item.folderName
+  );
+});
 
 // Export a compact version for the sidebar
 export function RenameHistoryCompact() {

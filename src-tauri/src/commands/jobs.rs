@@ -1,4 +1,7 @@
-use crate::execution::{ConflictPolicy, ExecutionConfig, ExecutionEngine, ExecutionResult, ProgressCallback};
+use crate::execution::{
+    ConflictPolicy, ExecutionConfig, ExecutionEngine, ExecutionResult, ProgressCallback,
+    StateSnapshot, StateValidator, ValidationResult,
+};
 use crate::jobs::{JobManager, JobStatus, OrganizeJob, OrganizeOperation, OrganizePlan};
 use crate::security::PathValidator;
 use crate::wal::entry::{WALJournal, WALOperationType};
@@ -200,22 +203,66 @@ pub fn resume_organize_job(job_id: String) -> Result<OrganizeJob, String> {
 /// V5: Now emits 'execution-progress' events for clean UI updates.
 /// V6: Now accepts conflict_policy for handling destination conflicts.
 /// V7: Now accepts original_folder for post-execution cleanup of empty directories.
+/// V8: Now validates filesystem state before execution to detect concurrent modifications.
 ///
 /// This command:
-/// 1. Converts the OrganizePlan to WAL entries
-/// 2. Builds a dependency DAG for parallel execution
-/// 3. Executes operations in parallel within each level
-/// 4. Handles destination conflicts according to policy (skip, auto_rename, fail)
-/// 5. Emits progress events after each level completes
-/// 6. Cleans up empty directories in the original folder after successful execution
-/// 7. Returns the execution result
+/// 1. Validates that source files haven't changed since plan creation
+/// 2. Converts the OrganizePlan to WAL entries
+/// 3. Builds a dependency DAG for parallel execution
+/// 4. Executes operations in parallel within each level
+/// 5. Handles destination conflicts according to policy (skip, auto_rename, fail)
+/// 6. Emits progress events after each level completes
+/// 7. Cleans up empty directories in the original folder after successful execution
+/// 8. Returns the execution result
 #[tauri::command]
 pub async fn execute_plan_parallel(
     app_handle: AppHandle,
     plan: OrganizePlan,
     conflict_policy: Option<String>,
     original_folder: Option<String>,
+    state_snapshot: Option<serde_json::Value>,
 ) -> Result<ExecutionResult, String> {
+    // V8: Validate filesystem state if snapshot was provided
+    if let Some(snapshot_json) = state_snapshot {
+        let snapshot: StateSnapshot = serde_json::from_value(snapshot_json)
+            .map_err(|e| format!("Invalid state snapshot: {}", e))?;
+
+        let validator = StateValidator::new(snapshot);
+        let validation = validator.validate_current_state()?;
+
+        if !validation.valid {
+            // Emit state conflict event so frontend can show warning
+            let _ = app_handle.emit("execution-state-conflict", &validation);
+
+            // If there are critical conflicts (deleted files), abort
+            if validation.critical_count > 0 {
+                let critical_paths: Vec<&str> = validation
+                    .conflicts
+                    .iter()
+                    .filter(|c| c.is_critical())
+                    .map(|c| match c {
+                        crate::execution::StateConflict::Deleted { path } => path.as_str(),
+                        _ => "",
+                    })
+                    .filter(|s| !s.is_empty())
+                    .collect();
+
+                return Err(format!(
+                    "Execution aborted: {} source file(s) were deleted since planning: {}",
+                    validation.critical_count,
+                    critical_paths.join(", ")
+                ));
+            }
+
+            // Non-critical conflicts (modifications) - log warning but continue
+            tracing::warn!(
+                conflicts = validation.warning_count,
+                "Proceeding with execution despite {} file modification(s) detected",
+                validation.warning_count
+            );
+        }
+    }
+
     // Parse conflict policy (default to AutoRename for better UX)
     let policy = match conflict_policy.as_deref() {
         Some("skip") => ConflictPolicy::Skip,
@@ -402,6 +449,29 @@ pub async fn execute_plan_parallel(
     }
 
     Ok(result)
+}
+
+/// Capture a state snapshot for the given source paths
+///
+/// This should be called when the plan is generated/displayed to the user.
+/// The snapshot can later be passed to execute_plan_parallel to validate
+/// that files haven't changed between planning and execution.
+#[tauri::command]
+pub fn capture_state_snapshot(source_paths: Vec<String>) -> Result<StateSnapshot, String> {
+    let paths: Vec<PathBuf> = source_paths.into_iter().map(PathBuf::from).collect();
+    StateSnapshot::capture(&paths)
+}
+
+/// Validate current state against a previously captured snapshot
+///
+/// Useful for checking if files have changed before starting execution.
+#[tauri::command]
+pub fn validate_state_snapshot(snapshot: serde_json::Value) -> Result<ValidationResult, String> {
+    let snapshot: StateSnapshot = serde_json::from_value(snapshot)
+        .map_err(|e| format!("Invalid state snapshot: {}", e))?;
+
+    let validator = StateValidator::new(snapshot);
+    validator.validate_current_state()
 }
 
 /// Recursively delete empty directories starting from the given path.

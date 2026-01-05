@@ -194,9 +194,31 @@ fn execute_query_semantic(input: &serde_json::Value, vfs: &ShadowVFS) -> V2ToolR
 }
 
 fn execute_apply_rules(input: &serde_json::Value, vfs: &mut ShadowVFS) -> V2ToolResult {
+    // Debug: log the full input structure
+    eprintln!("[V2Tool] apply_organization_rules input: {}", serde_json::to_string_pretty(input).unwrap_or_default());
+
     let rules_json = match input.get("rules").and_then(|v| v.as_array()) {
-        Some(arr) => arr,
-        None => return V2ToolResult::Error("Missing 'rules' array".to_string()),
+        Some(arr) if !arr.is_empty() => arr,
+        Some(_) => {
+            // Empty array provided - guide AI to provide rules
+            return V2ToolResult::Error(
+                "The 'rules' array is empty. Please provide at least one rule.\n\n\
+                Example rule format:\n\
+                {\n  \"rules\": [\n    {\n      \"name\": \"Organize PDFs\",\n      \
+                \"if\": \"file.ext == 'pdf'\",\n      \"thenMoveTo\": \"Documents/PDFs\"\n    }\n  ]\n}".to_string()
+            );
+        }
+        None => {
+            // Missing rules key entirely
+            let keys: Vec<&str> = input.as_object().map(|o| o.keys().map(|s| s.as_str()).collect()).unwrap_or_default();
+            return V2ToolResult::Error(format!(
+                "Missing 'rules' array. You provided keys: {:?}\n\n\
+                Please provide rules in this format:\n\
+                {{\n  \"rules\": [\n    {{\n      \"name\": \"Rule Name\",\n      \
+                \"if\": \"file.ext == 'pdf'\",\n      \"thenMoveTo\": \"FolderName\"\n    }}\n  ]\n}}",
+                keys
+            ));
+        }
     };
 
     let mode = input

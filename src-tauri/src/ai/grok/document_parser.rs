@@ -38,6 +38,7 @@ pub struct ParsedDocument {
 
 /// Document metadata from extraction
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct DocumentMetadata {
     pub title: Option<String>,
     pub author: Option<String>,
@@ -506,6 +507,7 @@ impl DocumentParser {
 
     /// Get a content preview suitable for AI analysis
     /// Returns a structured summary of the document
+    #[allow(dead_code)]
     pub fn get_analysis_preview(&self, parsed: &ParsedDocument, max_chars: usize) -> String {
         let mut preview = String::new();
 

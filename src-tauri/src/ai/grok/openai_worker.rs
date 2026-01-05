@@ -17,16 +17,22 @@ use tokio::sync::Semaphore;
 #[serde(rename_all = "camelCase")]
 pub struct FileAnalysis {
     /// Original file path
+    #[serde(alias = "file_path")]
     pub file_path: String,
     /// Original filename
+    #[serde(alias = "old_name")]
     pub old_name: String,
     /// AI-suggested new filename (with extension)
+    #[serde(alias = "new_name")]
     pub new_name: String,
     /// Content summary for folder organization
+    #[serde(alias = "summary")]
     pub summary: String,
     /// Key entities extracted (company names, dates, amounts)
+    #[serde(alias = "entities")]
     pub entities: Vec<String>,
     /// Document type classification
+    #[serde(alias = "doc_type")]
     pub doc_type: String,
 }
 
@@ -77,9 +83,9 @@ impl OpenAIWorker {
                     "=== FILE: {} ===\nExtension: {}\nContent:\n{}\n",
                     f.filename,
                     f.extension,
-                    // Limit content per file to ~2000 chars to stay within context
-                    if f.content.len() > 2000 {
-                        format!("{}...[truncated]", &f.content[..2000])
+                    // Limit content per file to ~1000 chars to stay within GPT-5-nano context
+                    if f.content.len() > 1000 {
+                        format!("{}...[truncated]", &f.content[..1000])
                     } else {
                         f.content.clone()
                     }
@@ -141,9 +147,11 @@ Return ONLY the JSON array, no other text."#,
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({
                 "model": self.model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 2000,
-                "temperature": 0.3
+                "messages": [
+                    {"role": "system", "content": "You are a document analysis assistant. Respond only with valid JSON arrays."},
+                    {"role": "user", "content": prompt}
+                ],
+                "max_completion_tokens": 25000
             }))
             .send()
             .await
@@ -155,33 +163,49 @@ Return ONLY the JSON array, no other text."#,
             return Err(format!("OpenAI API error ({}): {}", status, text));
         }
 
-        #[derive(Deserialize)]
+        #[derive(Deserialize, Debug)]
         struct OpenAIResponse {
             choices: Vec<Choice>,
         }
-        #[derive(Deserialize)]
+        #[derive(Deserialize, Debug)]
         struct Choice {
             message: Message,
+            finish_reason: Option<String>,
         }
-        #[derive(Deserialize)]
+        #[derive(Deserialize, Debug)]
         struct Message {
-            content: String,
+            role: String,
+            content: Option<String>,
         }
 
-        let api_response: OpenAIResponse = response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse OpenAI response: {}", e))?;
+        let response_text = response.text().await
+            .map_err(|e| format!("Failed to read OpenAI response: {}", e))?;
 
-        let content = api_response
-            .choices
-            .first()
-            .map(|c| c.message.content.clone())
-            .ok_or("No response from OpenAI")?;
+        tracing::debug!("[OpenAI] Raw response: {}", &response_text[..response_text.len().min(1000)]);
+
+        let api_response: OpenAIResponse = serde_json::from_str(&response_text)
+            .map_err(|e| format!("Failed to parse OpenAI response: {}. Raw: {}", e, &response_text[..response_text.len().min(500)]))?;
+
+        let first_choice = api_response.choices.first();
+        let finish_reason = first_choice.and_then(|c| c.finish_reason.clone()).unwrap_or_default();
+
+        let content = first_choice
+            .and_then(|c| c.message.content.clone())
+            .ok_or_else(|| {
+                format!("No response from OpenAI. finish_reason={}, choices: {:?}",
+                    finish_reason,
+                    first_choice.map(|c| format!("role={}", c.message.role)))
+            })?;
+
+        if content.trim().is_empty() {
+            return Err(format!("OpenAI returned empty content. finish_reason={}", finish_reason));
+        }
+
+        tracing::debug!("[OpenAI] Response content: {}", &content[..content.len().min(500)]);
 
         // Parse JSON response
         let json_str = extract_json_array(&content)
-            .map_err(|e| format!("Failed to extract JSON array: {}. Content: {}", e, content))?;
+            .map_err(|e| format!("Failed to extract JSON array: {}. Content preview: {}", e, &content[..content.len().min(200)]))?;
         let mut analyses: Vec<FileAnalysis> = serde_json::from_str(&json_str)
             .map_err(|e| format!("Failed to parse analysis JSON: {}. Content: {}", e, content))?;
 
@@ -285,13 +309,13 @@ mod tests {
 
     #[test]
     fn test_calculate_worker_count() {
-        assert_eq!(calculate_worker_count(5), 2);
-        assert_eq!(calculate_worker_count(10), 2);
-        assert_eq!(calculate_worker_count(15), 5);
-        assert_eq!(calculate_worker_count(25), 5);
-        assert_eq!(calculate_worker_count(30), 10);
-        assert_eq!(calculate_worker_count(75), 15);
-        assert_eq!(calculate_worker_count(150), 20);
+        assert_eq!(calculate_worker_count(5), 4);
+        assert_eq!(calculate_worker_count(10), 4);
+        assert_eq!(calculate_worker_count(15), 8);
+        assert_eq!(calculate_worker_count(25), 8);
+        assert_eq!(calculate_worker_count(30), 16);
+        assert_eq!(calculate_worker_count(75), 24);
+        assert_eq!(calculate_worker_count(150), 32);
     }
 
     #[test]

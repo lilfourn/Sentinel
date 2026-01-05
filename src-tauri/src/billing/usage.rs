@@ -188,6 +188,28 @@ impl UsageTracker {
             .map_err(|e| format!("Failed to collect results: {}", e))
     }
 
+    /// Get total token usage for the current month
+    ///
+    /// Returns (total_input_tokens, total_output_tokens)
+    pub fn get_monthly_token_totals(&self, user_id: &str) -> Result<(u64, u64), String> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now();
+        let month_start = format!("{}-{:02}-01", now.year(), now.month());
+
+        let result = conn.query_row(
+            "SELECT COALESCE(SUM(total_input_tokens), 0), COALESCE(SUM(total_output_tokens), 0)
+             FROM daily_usage WHERE user_id = ? AND date >= ?",
+            params![user_id, month_start],
+            |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, i64>(1)? as u64)),
+        );
+
+        match result {
+            Ok(totals) => Ok(totals),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok((0, 0)),
+            Err(e) => Err(format!("Database query failed: {}", e)),
+        }
+    }
+
     /// Clear old usage records (older than 90 days)
     #[allow(dead_code)]
     pub fn cleanup_old_records(&self) -> Result<usize, String> {

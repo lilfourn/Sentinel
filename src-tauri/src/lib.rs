@@ -96,9 +96,7 @@ pub fn run() {
             get_rename_suggestion,
             apply_rename,
             undo_rename,
-            generate_organize_plan_agentic,
-            suggest_naming_conventions,
-            generate_organize_plan_with_convention,
+            generate_organize_plan_hybrid,
             // Job persistence commands
             start_organize_job,
             set_job_plan,
@@ -110,6 +108,8 @@ pub fn run() {
             clear_organize_job,
             resume_organize_job,
             execute_plan_parallel,
+            capture_state_snapshot,
+            validate_state_snapshot,
             // Thumbnail commands
             get_thumbnail,
             clear_thumbnail_cache,
@@ -202,6 +202,8 @@ pub fn run() {
             record_usage,
             can_use_model,
             can_use_extended_thinking,
+            check_token_quota,
+            get_monthly_tokens,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

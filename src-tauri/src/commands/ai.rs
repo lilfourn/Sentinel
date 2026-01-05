@@ -1,4 +1,4 @@
-use crate::ai::{run_v2_agentic_organize, ExpandableDetail, ProgressEvent, AnthropicClient, CredentialManager};
+use crate::ai::{run_v6_hybrid_organization, ExpandableDetail, ProgressEvent, AnthropicClient, CredentialManager};
 use crate::jobs::OrganizePlan;
 use std::path::Path;
 
@@ -250,103 +250,38 @@ pub async fn undo_rename(
     }
 }
 
-/// Agentic organize command - explores folder and generates typed plan
-/// Uses Claude tool-use with V2 semantic tools and Shadow VFS
+/// Hybrid organization: GPT-5-nano exploration + Claude planning
+///
+/// This command runs a two-phase organization:
+/// 1. GPT-5-nano workers analyze all files (entities, summaries, doc types)
+/// 2. Claude creates organization rules based on the enriched analysis
+///
+/// ## Benefits
+/// - **Cost**: GPT-5-nano is ~10x cheaper for bulk file analysis
+/// - **Quality**: Claude excels at rule creation and reasoning
+/// - **Context**: Entity-based context gives Claude better understanding
 #[tauri::command]
-pub async fn generate_organize_plan_agentic(
+pub async fn generate_organize_plan_hybrid(
     folder_path: String,
     user_request: String,
     app_handle: tauri::AppHandle,
 ) -> Result<OrganizePlan, String> {
     use tauri::Emitter;
+    use crate::ai::grok::{FileAnalysis, openai_worker::{FileContent, calculate_worker_count, create_file_batches, run_parallel_workers}};
+    use crate::ai::grok::document_parser::parse_document;
 
-    let emit = |thought_type: &str, content: &str, expandable_details: Option<Vec<ExpandableDetail>>| {
-        let _ = app_handle.emit(
-            "ai-thought",
-            serde_json::json!({
-                "type": thought_type,
-                "content": content,
-                "expandableDetails": expandable_details,
-            }),
-        );
-    };
-
-    // Create progress emitter for analysis-progress events (updates progress bar)
-    let app_handle_clone = app_handle.clone();
-    let progress_emit = move |progress: ProgressEvent| {
-        let _ = app_handle_clone.emit("analysis-progress", &progress);
-    };
-
-    run_v2_agentic_organize(Path::new(&folder_path), &user_request, emit, Some(progress_emit)).await
-}
-
-/// Suggest naming conventions for a folder
-#[tauri::command]
-pub async fn suggest_naming_conventions(
-    folder_path: String,
-    app_handle: tauri::AppHandle,
-) -> Result<crate::ai::NamingConventionSuggestions, String> {
-    use tauri::Emitter;
-
-    let path = std::path::Path::new(&folder_path);
+    let path = Path::new(&folder_path);
     if !path.exists() || !path.is_dir() {
         return Err(format!("Invalid folder path: {}", folder_path));
     }
 
-    // Emit progress event
-    let _ = app_handle.emit(
-        "ai-thought",
-        serde_json::json!({
-            "type": "naming_conventions",
-            "content": "Analyzing file naming patterns...",
-        }),
-    );
+    // Get OpenAI API key (check credential manager, then env vars)
+    let openai_key = CredentialManager::get_api_key("openai")
+        .or_else(|_| std::env::var("OPENAI_API_KEY"))
+        .or_else(|_| std::env::var("VITE_OPENAI_API_KEY"))
+        .map_err(|_| "OpenAI API key not configured. Set OPENAI_API_KEY or VITE_OPENAI_API_KEY environment variable.".to_string())?;
 
-    // Build file listing (just top-level files for naming analysis)
-    let mut file_listing = String::new();
-    let entries = std::fs::read_dir(path)
-        .map_err(|e| format!("Failed to read directory: {}", e))?;
-
-    for entry in entries.filter_map(|e| e.ok()) {
-        let name = entry.file_name().to_string_lossy().to_string();
-        let file_type = entry.file_type().map_err(|e| e.to_string())?;
-
-        if file_type.is_file() {
-            file_listing.push_str(&format!("{}\n", name));
-        }
-    }
-
-    if file_listing.is_empty() {
-        return Err("No files found in folder".to_string());
-    }
-
-    // Get AI suggestions
-    let client = AnthropicClient::new();
-    let suggestions = client
-        .suggest_naming_conventions(&folder_path, &file_listing)
-        .await?;
-
-    let _ = app_handle.emit(
-        "ai-thought",
-        serde_json::json!({
-            "type": "naming_conventions",
-            "content": format!("Found {} naming conventions", suggestions.suggestions.len()),
-        }),
-    );
-
-    Ok(suggestions)
-}
-
-/// Generate organize plan with selected naming convention
-#[tauri::command]
-pub async fn generate_organize_plan_with_convention(
-    folder_path: String,
-    user_request: String,
-    convention: Option<crate::ai::NamingConvention>,
-    app_handle: tauri::AppHandle,
-) -> Result<crate::jobs::OrganizePlan, String> {
-    use tauri::Emitter;
-
+    // Event emitter for AI thoughts
     let emit = |thought_type: &str, content: &str, expandable_details: Option<Vec<ExpandableDetail>>| {
         let _ = app_handle.emit(
             "ai-thought",
@@ -358,21 +293,95 @@ pub async fn generate_organize_plan_with_convention(
         );
     };
 
-    // Create progress emitter for analysis-progress events (updates progress bar)
+    // Progress emitter
     let app_handle_clone = app_handle.clone();
     let progress_emit = move |progress: ProgressEvent| {
         let _ = app_handle_clone.emit("analysis-progress", &progress);
     };
 
-    // Build modified request with convention if provided
-    let full_request = if let Some(ref conv) = convention {
-        format!(
-            "{}\n\nIMPORTANT - NAMING CONVENTION TO APPLY:\nWhen renaming files, use the '{}' convention.\nPattern: {}\nExample: {}\n\nApply this naming style consistently to all file rename operations.",
-            user_request, conv.name, conv.pattern, conv.example
-        )
-    } else {
-        user_request
-    };
+    // Phase 1: Scan folder and extract text
+    emit("indexing", "Phase 1: Scanning folder for files...", None);
 
-    run_v2_agentic_organize(Path::new(&folder_path), &full_request, emit, Some(progress_emit)).await
+    let mut file_contents: Vec<FileContent> = Vec::new();
+    let entries = std::fs::read_dir(path)
+        .map_err(|e| format!("Failed to read directory: {}", e))?;
+
+    for entry in entries.filter_map(|e| e.ok()) {
+        let entry_path = entry.path();
+        if entry_path.is_file() {
+            let filename = entry_path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let extension = entry_path.extension()
+                .map(|e| e.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            // Try to extract text from file
+            let content = parse_document(&entry_path)
+                .map(|doc| doc.text)
+                .unwrap_or_else(|_| format!("File: {}", filename));
+
+            file_contents.push(FileContent {
+                path: entry_path,
+                filename,
+                content,
+                extension,
+            });
+        }
+    }
+
+    let file_count = file_contents.len();
+    if file_count == 0 {
+        return Err("No files found in folder".to_string());
+    }
+
+    emit("indexing", &format!("Found {} files to analyze", file_count), Some(vec![
+        ExpandableDetail { label: "Files".to_string(), value: file_count.to_string() },
+        ExpandableDetail { label: "Mode".to_string(), value: "V6 Hybrid (GPT→Claude)".to_string() },
+    ]));
+
+    // Phase 2: Run GPT-5-nano workers
+    emit("analyzing", "Phase 2: Running GPT-5-nano analysis workers...", None);
+
+    let batch_size = 5;
+    let batches = create_file_batches(file_contents, batch_size);
+    let worker_count = calculate_worker_count(file_count);
+
+    emit("analyzing", &format!("Dispatching {} workers ({} batches)", worker_count, batches.len()), Some(vec![
+        ExpandableDetail { label: "Workers".to_string(), value: worker_count.to_string() },
+        ExpandableDetail { label: "Batches".to_string(), value: batches.len().to_string() },
+    ]));
+
+    // Run parallel workers
+    let results = run_parallel_workers(openai_key, batches, worker_count).await;
+
+    // Collect all successful analyses
+    let mut all_analyses: Vec<FileAnalysis> = Vec::new();
+    let mut error_messages: Vec<String> = Vec::new();
+    for result in results {
+        match result {
+            Ok(analyses) => all_analyses.extend(analyses),
+            Err(e) => error_messages.push(e),
+        }
+    }
+
+    emit("analyzing", &format!("GPT-5-nano analyzed {} files ({} batch errors)", all_analyses.len(), error_messages.len()), Some(vec![
+        ExpandableDetail { label: "Analyzed".to_string(), value: all_analyses.len().to_string() },
+        ExpandableDetail { label: "Errors".to_string(), value: error_messages.len().to_string() },
+    ]));
+
+    if all_analyses.is_empty() {
+        // Return actual error messages so user knows what went wrong
+        let error_detail = if error_messages.is_empty() {
+            "No files to analyze".to_string()
+        } else {
+            error_messages.first().cloned().unwrap_or_default()
+        };
+        return Err(format!("GPT-5-nano analysis failed: {}", error_detail));
+    }
+
+    // Phase 3: Run Claude planning with enriched context
+    emit("thinking", "Phase 3: Claude is creating organization rules...", None);
+
+    run_v6_hybrid_organization(path, &user_request, all_analyses, emit, Some(progress_emit)).await
 }

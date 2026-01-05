@@ -1,9 +1,11 @@
 //! Tauri commands for billing and subscription management
 
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::billing::{
-    BillingState, DailyLimits, DailyUsage, LimitCheckResult, SubscriptionCache, SubscriptionInfo,
+    BillingState, DailyLimits, DailyUsage, LimitCheckResult, LimitDenialReason,
+    MonthlyTokenQuota, SubscriptionCache, SubscriptionInfo,
 };
 
 /// Get current daily usage
@@ -154,4 +156,87 @@ pub fn can_use_extended_thinking(
 ) -> bool {
     let tier = billing.subscription_manager.get_tier(&user_id);
     billing.limit_enforcer.can_use_extended_thinking(tier)
+}
+
+/// Token quota status response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenQuotaStatus {
+    /// Whether quota is exceeded
+    pub exceeded: bool,
+    /// Whether approaching quota (soft warning)
+    pub warning: bool,
+    /// Input tokens used this month
+    pub input_used: u64,
+    /// Output tokens used this month
+    pub output_used: u64,
+    /// Maximum input tokens allowed
+    pub input_limit: u64,
+    /// Maximum output tokens allowed
+    pub output_limit: u64,
+    /// Remaining input tokens
+    pub input_remaining: u64,
+    /// Remaining output tokens
+    pub output_remaining: u64,
+    /// Usage percentage (input)
+    pub input_percent: u8,
+    /// Usage percentage (output)
+    pub output_percent: u8,
+}
+
+/// Check monthly token quota status
+#[tauri::command]
+pub async fn check_token_quota(
+    billing: State<'_, BillingState>,
+    user_id: String,
+) -> Result<TokenQuotaStatus, String> {
+    let tier = billing.subscription_manager.get_tier(&user_id);
+    let (input_used, output_used) = billing.usage_tracker.get_monthly_token_totals(&user_id)?;
+
+    let quota = MonthlyTokenQuota::for_tier(tier);
+    let (input_remaining, output_remaining) = quota.remaining(input_used, output_used);
+
+    let input_percent = if quota.max_input_tokens > 0 {
+        ((input_used * 100) / quota.max_input_tokens).min(100) as u8
+    } else {
+        0
+    };
+    let output_percent = if quota.max_output_tokens > 0 {
+        ((output_used * 100) / quota.max_output_tokens).min(100) as u8
+    } else {
+        0
+    };
+
+    // Check quota status
+    let check_result = billing
+        .limit_enforcer
+        .check_token_quota(tier, input_used, output_used);
+
+    let (exceeded, warning) = match check_result {
+        Err(LimitDenialReason::TokenQuotaExceeded { .. }) => (true, false),
+        Ok(Some(LimitDenialReason::TokenQuotaWarning { .. })) => (false, true),
+        _ => (false, false),
+    };
+
+    Ok(TokenQuotaStatus {
+        exceeded,
+        warning,
+        input_used,
+        output_used,
+        input_limit: quota.max_input_tokens,
+        output_limit: quota.max_output_tokens,
+        input_remaining,
+        output_remaining,
+        input_percent,
+        output_percent,
+    })
+}
+
+/// Get monthly token totals
+#[tauri::command]
+pub async fn get_monthly_tokens(
+    billing: State<'_, BillingState>,
+    user_id: String,
+) -> Result<(u64, u64), String> {
+    billing.usage_tracker.get_monthly_token_totals(&user_id)
 }

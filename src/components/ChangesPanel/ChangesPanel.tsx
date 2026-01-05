@@ -20,7 +20,6 @@ import {
   type ThoughtType,
   type ExecutionError,
 } from '../../stores/organize-store';
-import { ConventionSelector } from './ConventionSelector';
 import { ErrorDetailDialog } from './ErrorDetailDialog';
 import { OrganizeMethodSelector } from './OrganizeMethodSelector';
 import { DynamicStatus } from './DynamicStatus';
@@ -44,10 +43,6 @@ export function ChangesPanel() {
     setUserInstruction,
     submitInstruction,
     awaitingInstruction,
-    awaitingConventionSelection,
-    suggestedConventions,
-    selectConvention,
-    skipConventionSelection,
     phase,
     analysisError,
     latestEvent,
@@ -56,6 +51,7 @@ export function ChangesPanel() {
     rejectPlan,
     analysisProgress,
     executionErrors,
+    openPlanEditModal,
   } = useOrganizeStore();
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -87,7 +83,7 @@ export function ChangesPanel() {
           <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center shadow-sm">
             <Sparkles size={13} className="text-white" />
           </div>
-          <span className="text-sm font-medium text-gray-100">AI Organizer</span>
+          <span className="text-sm font-medium text-gray-100">Sentinel</span>
         </div>
         <button
           onClick={closeOrganizer}
@@ -113,7 +109,7 @@ export function ChangesPanel() {
             <ActivityItem
               key={thought.id}
               thought={thought}
-              isLatest={index === thoughts.length - 1 && isWorking && !awaitingInstruction && !awaitingConventionSelection}
+              isLatest={index === thoughts.length - 1 && isWorking && !awaitingInstruction}
             />
           ))}
 
@@ -141,15 +137,6 @@ export function ChangesPanel() {
             />
           )}
 
-          {/* Naming Convention Selection (deprecated - kept for compatibility) */}
-          {awaitingConventionSelection && suggestedConventions && (
-            <ConventionSelector
-              conventions={suggestedConventions}
-              onSelect={selectConvention}
-              onSkip={skipConventionSelection}
-            />
-          )}
-
           {/* V5: Simulation Controls - shown when plan is ready for approval */}
           {phase === 'simulation' && currentPlan && (
             <div className="mt-3 p-3 rounded-lg bg-white/[0.03] border border-white/10">
@@ -163,7 +150,11 @@ export function ChangesPanel() {
               </div>
 
               {/* Plan Preview - shows what will change */}
-              <PlanPreview plan={currentPlan} className="mb-4" />
+              <PlanPreview
+                plan={currentPlan}
+                onEditClick={openPlanEditModal}
+                className="mb-4"
+              />
 
               <SimulationControls
                 hasConflicts={false}
@@ -171,6 +162,7 @@ export function ChangesPanel() {
                 isApplying={false}
                 onApply={acceptPlanParallel}
                 onCancel={rejectPlan}
+                onEdit={openPlanEditModal}
               />
             </div>
           )}

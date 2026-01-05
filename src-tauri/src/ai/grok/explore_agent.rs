@@ -22,6 +22,7 @@ use std::time::Instant;
 use tokio::sync::Semaphore;
 
 /// Explore agent for analyzing document batches
+#[allow(dead_code)]
 pub struct ExploreAgent {
     client: Arc<GrokClient>,
     cache: Arc<ContentCache>,
@@ -507,6 +508,7 @@ Respond with ONLY this JSON format:
 
     /// Analyze a single file
     /// Strategy: Text extraction first, Vision API fallback for scanned/images
+    #[allow(dead_code)]
     async fn analyze_file(
         &self,
         path: &Path,

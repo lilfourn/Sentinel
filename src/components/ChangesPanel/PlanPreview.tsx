@@ -13,6 +13,7 @@ import type { OrganizePlan, OrganizeOperation } from '../../stores/organize-stor
 
 interface PlanPreviewProps {
   plan: OrganizePlan;
+  onEditClick?: () => void;
   className?: string;
 }
 
@@ -30,7 +31,7 @@ interface FolderSummary {
  * - File distribution by destination folder
  * - Operation counts by type
  */
-export function PlanPreview({ plan, className }: PlanPreviewProps) {
+export function PlanPreview({ plan, onEditClick, className }: PlanPreviewProps) {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
 
   // Analyze operations to build summary
@@ -74,10 +75,18 @@ export function PlanPreview({ plan, className }: PlanPreviewProps) {
 
       {/* Folder Structure Preview */}
       <div className="rounded-lg bg-black/20 border border-white/5 overflow-hidden">
-        <div className="px-2 py-1.5 border-b border-white/5 bg-white/[0.02]">
+        <div className="px-2 py-1.5 border-b border-white/5 bg-white/[0.02] flex items-center justify-between">
           <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wide">
             New Structure
           </span>
+          {onEditClick && (
+            <button
+              onClick={onEditClick}
+              className="text-[10px] text-orange-400 hover:text-orange-300 transition-colors"
+            >
+              Edit Plan
+            </button>
+          )}
         </div>
 
         <div className="max-h-48 overflow-y-auto">

@@ -5,8 +5,8 @@
 use chrono::Utc;
 
 use super::types::{
-    DailyLimits, DailyUsage, LimitCheckResult, LimitDenialReason, SubscriptionCache,
-    SubscriptionStatus, SubscriptionTier,
+    DailyLimits, DailyUsage, LimitCheckResult, LimitDenialReason, MonthlyTokenQuota,
+    SubscriptionCache, SubscriptionStatus, SubscriptionTier,
 };
 
 /// Limit enforcement service
@@ -133,6 +133,62 @@ impl LimitEnforcer {
     /// Quick check if user can use extended thinking
     pub fn can_use_extended_thinking(&self, tier: SubscriptionTier) -> bool {
         tier == SubscriptionTier::Pro
+    }
+
+    /// Check if monthly token quota allows a request
+    ///
+    /// Returns Ok(()) if within quota, or Err with denial reason if exceeded.
+    /// Also emits a warning if approaching quota.
+    pub fn check_token_quota(
+        &self,
+        tier: SubscriptionTier,
+        monthly_input_tokens: u64,
+        monthly_output_tokens: u64,
+    ) -> Result<Option<LimitDenialReason>, LimitDenialReason> {
+        let quota = MonthlyTokenQuota::for_tier(tier);
+
+        // Check if exceeded
+        if quota.is_exceeded(monthly_input_tokens, monthly_output_tokens) {
+            return Err(LimitDenialReason::TokenQuotaExceeded {
+                input_used: monthly_input_tokens,
+                input_limit: quota.max_input_tokens,
+                output_used: monthly_output_tokens,
+                output_limit: quota.max_output_tokens,
+            });
+        }
+
+        // Check if approaching (return warning but still allow)
+        if quota.is_approaching(monthly_input_tokens, monthly_output_tokens) {
+            let input_percent = if quota.max_input_tokens > 0 {
+                ((monthly_input_tokens * 100) / quota.max_input_tokens) as u8
+            } else {
+                0
+            };
+            let output_percent = if quota.max_output_tokens > 0 {
+                ((monthly_output_tokens * 100) / quota.max_output_tokens) as u8
+            } else {
+                0
+            };
+
+            return Ok(Some(LimitDenialReason::TokenQuotaWarning {
+                input_percent,
+                output_percent,
+            }));
+        }
+
+        Ok(None)
+    }
+
+    /// Get remaining token quota
+    #[allow(dead_code)]
+    pub fn get_remaining_quota(
+        &self,
+        tier: SubscriptionTier,
+        monthly_input_tokens: u64,
+        monthly_output_tokens: u64,
+    ) -> (u64, u64) {
+        let quota = MonthlyTokenQuota::for_tier(tier);
+        quota.remaining(monthly_input_tokens, monthly_output_tokens)
     }
 
     /// Get display name for a model

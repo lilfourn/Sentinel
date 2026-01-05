@@ -319,12 +319,12 @@ where
 
     // V5: For pattern-heavy large folders, use hologram compression
     if use_hologram {
-        return run_v5_hologram_loop_with_blueprint(target_folder, user_request, &event_emitter, &mut vfs, &blueprint).await;
+        return run_v5_hologram_loop_with_blueprint(target_folder, user_request, &event_emitter, &mut vfs, &blueprint, progress_emitter.as_ref()).await;
     }
 
     // V4: For large folders without patterns, use sampling mode
     if use_sampling {
-        return run_v4_sampled_loop_with_blueprint(target_folder, user_request, &event_emitter, &mut vfs, &blueprint).await;
+        return run_v4_sampled_loop_with_blueprint(target_folder, user_request, &event_emitter, &mut vfs, &blueprint, progress_emitter.as_ref()).await;
     }
 
     // 2. Generate FolderDigest for rich analytics (V3 - for small folders)
@@ -737,14 +737,16 @@ where
 /// 4. Apply rules to ALL files in memory (the "Reduce" step)
 /// 5. Check coverage - if < 95%, generate new sample from unmatched files
 /// 6. Repeat until coverage target reached or max iterations
-async fn run_v4_sampled_loop<F>(
+async fn run_v4_sampled_loop<F, P>(
     target_folder: &Path,
     user_request: &str,
     event_emitter: &F,
     vfs: &mut ShadowVFS,
+    progress_emitter: Option<&P>,
 ) -> Result<OrganizePlan, String>
 where
     F: Fn(&str, &str, Option<Vec<ExpandableDetail>>),
+    P: Fn(ProgressEvent),
 {
     let file_count = vfs.file_count();
 
@@ -779,6 +781,22 @@ where
         let coverage = vfs.coverage();
         let organized = vfs.organized_count();
         let unmatched_count = file_count - organized;
+
+        // Emit progress for UI progress bar
+        if let Some(emit_progress) = progress_emitter {
+            emit_progress(ProgressEvent {
+                phase: "analyzing".to_string(),
+                current: organized,
+                total: file_count,
+                message: format!(
+                    "Iteration {} - {:.0}% organized ({} of {} files)",
+                    iteration + 1,
+                    coverage * 100.0,
+                    organized,
+                    file_count
+                ),
+            });
+        }
 
         event_emitter("thinking", "Analyzing files...", None);
 
@@ -868,13 +886,16 @@ where
         // Process tool calls
         for block in &api_response.content {
             if let ContentBlockResponse::ToolUse { id: _, name, input } = block {
-                eprintln!("[V4SampledLoop] Tool use: {}", name);
+                eprintln!("[V4SampledLoop] Tool use: {} with input: {}", name, serde_json::to_string_pretty(input).unwrap_or_default());
 
                 // Emit event for UI
                 match name.as_str() {
                     "apply_organization_rules" => {
                         let rules = input.get("rules").and_then(|v| v.as_array());
                         let count = rules.map(|a| a.len()).unwrap_or(0);
+                        if count == 0 {
+                            eprintln!("[V4SampledLoop] WARNING: apply_organization_rules called with 0 rules! Input keys: {:?}", input.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+                        }
                         event_emitter("applying_rules", &format!("Applying {} rules", count), Some(vec![
                             ExpandableDetail { label: "Rules".to_string(), value: count.to_string() },
                         ]));
@@ -1054,14 +1075,16 @@ async fn send_api_request_with_retry(
 /// 3. AI writes rules based on pattern templates
 /// 4. Apply rules to ALL files (the "Reduce" step)
 /// 5. Commit when coverage >= 95%
-async fn run_v5_hologram_loop<F>(
+async fn run_v5_hologram_loop<F, P>(
     target_folder: &Path,
     user_request: &str,
     event_emitter: &F,
     vfs: &mut ShadowVFS,
+    progress_emitter: Option<&P>,
 ) -> Result<OrganizePlan, String>
 where
     F: Fn(&str, &str, Option<Vec<ExpandableDetail>>),
+    P: Fn(ProgressEvent),
 {
     let file_count = vfs.file_count();
 
@@ -1123,6 +1146,22 @@ where
         // Check coverage - stop if we've reached target
         let coverage = vfs.coverage();
         let organized = vfs.organized_count();
+
+        // Emit progress for UI progress bar
+        if let Some(emit_progress) = progress_emitter {
+            emit_progress(ProgressEvent {
+                phase: "analyzing".to_string(),
+                current: organized,
+                total: file_count,
+                message: format!(
+                    "Iteration {} - {:.0}% organized ({} of {} files)",
+                    iteration + 1,
+                    coverage * 100.0,
+                    organized,
+                    file_count
+                ),
+            });
+        }
 
         event_emitter("thinking", "Analyzing files...", None);
 
@@ -1188,13 +1227,16 @@ where
         // Process tool calls
         for block in &api_response.content {
             if let ContentBlockResponse::ToolUse { id: _, name, input } = block {
-                eprintln!("[V5HologramLoop] Tool use: {}", name);
+                eprintln!("[V5HologramLoop] Tool use: {} with input: {}", name, serde_json::to_string_pretty(input).unwrap_or_default());
 
                 // Emit event for UI
                 match name.as_str() {
                     "apply_organization_rules" => {
                         let rules = input.get("rules").and_then(|v| v.as_array());
                         let count = rules.map(|a| a.len()).unwrap_or(0);
+                        if count == 0 {
+                            eprintln!("[V5HologramLoop] WARNING: apply_organization_rules called with 0 rules! Input keys: {:?}", input.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+                        }
                         event_emitter(
                             "applying_rules",
                             &format!("Applying {} rules to {} files", count, file_count),
@@ -1365,15 +1407,17 @@ fn format_blueprint_context(blueprint: &Blueprint) -> String {
 }
 
 /// V6 Blueprint-aware wrapper for V4 sampled loop
-async fn run_v4_sampled_loop_with_blueprint<F>(
+async fn run_v4_sampled_loop_with_blueprint<F, P>(
     target_folder: &Path,
     user_request: &str,
     event_emitter: &F,
     vfs: &mut ShadowVFS,
     blueprint: &Blueprint,
+    progress_emitter: Option<&P>,
 ) -> Result<OrganizePlan, String>
 where
     F: Fn(&str, &str, Option<Vec<ExpandableDetail>>),
+    P: Fn(ProgressEvent),
 {
     // Enrich user request with Blueprint context
     let enriched_request = format!(
@@ -1387,19 +1431,21 @@ where
         blueprint.strategy_name
     );
 
-    run_v4_sampled_loop(target_folder, &enriched_request, event_emitter, vfs).await
+    run_v4_sampled_loop(target_folder, &enriched_request, event_emitter, vfs, progress_emitter).await
 }
 
 /// V6 Blueprint-aware wrapper for V5 hologram loop
-async fn run_v5_hologram_loop_with_blueprint<F>(
+async fn run_v5_hologram_loop_with_blueprint<F, P>(
     target_folder: &Path,
     user_request: &str,
     event_emitter: &F,
     vfs: &mut ShadowVFS,
     blueprint: &Blueprint,
+    progress_emitter: Option<&P>,
 ) -> Result<OrganizePlan, String>
 where
     F: Fn(&str, &str, Option<Vec<ExpandableDetail>>),
+    P: Fn(ProgressEvent),
 {
     // Enrich user request with Blueprint context
     let enriched_request = format!(
@@ -1413,7 +1459,310 @@ where
         blueprint.strategy_name
     );
 
-    run_v5_hologram_loop(target_folder, &enriched_request, event_emitter, vfs).await
+    run_v5_hologram_loop(target_folder, &enriched_request, event_emitter, vfs, progress_emitter).await
+}
+
+// ============================================================================
+// V6 Hybrid Mode: GPT-5-nano Exploration + Claude Planning
+// ============================================================================
+
+/// V6 Hybrid organization loop using pre-analyzed files from GPT-5-nano
+///
+/// This function receives file analyses from OpenAI workers and uses Claude
+/// to create organization rules based on the extracted entities and summaries.
+///
+/// ## Benefits
+/// - **Cost**: GPT-5-nano is ~10x cheaper for bulk file analysis
+/// - **Quality**: Claude Sonnet excels at rule creation and reasoning
+/// - **Context**: Summaries + entities give Claude better context than raw filenames
+///
+/// ## Flow
+/// 1. Receive FileAnalysis[] from GPT-5-nano workers
+/// 2. Build enriched context with entities and document types
+/// 3. Claude creates organization rules using entity data
+/// 4. Apply rules to VFS
+/// 5. Return OrganizePlan
+pub async fn run_v6_hybrid_organization<F, P>(
+    target_folder: &Path,
+    user_request: &str,
+    analyses: Vec<crate::ai::grok::FileAnalysis>,
+    event_emitter: F,
+    progress_emitter: Option<P>,
+) -> Result<OrganizePlan, String>
+where
+    F: Fn(&str, &str, Option<Vec<ExpandableDetail>>),
+    P: Fn(ProgressEvent),
+{
+    use super::prompts::{build_hybrid_context, V6_HYBRID_SYSTEM_PROMPT};
+
+    // 1. Build ShadowVFS from target folder
+    event_emitter("indexing", "Building virtual filesystem...", Some(vec![
+        ExpandableDetail { label: "Path".to_string(), value: target_folder.to_string_lossy().to_string() },
+    ]));
+
+    let mut vfs = ShadowVFS::new(target_folder).map_err(|e| {
+        format!("Failed to scan folder: {}", e)
+    })?;
+
+    let file_count = vfs.file_count();
+
+    // Emit progress
+    if let Some(ref emit_progress) = progress_emitter {
+        emit_progress(ProgressEvent {
+            phase: "planning".to_string(),
+            current: 0,
+            total: file_count,
+            message: format!("Using {} pre-analyzed files from GPT-5-nano", analyses.len()),
+        });
+    }
+
+    event_emitter("analyzing", &format!(
+        "Received {} file analyses from GPT-5-nano",
+        analyses.len()
+    ), Some(vec![
+        ExpandableDetail { label: "Files".to_string(), value: file_count.to_string() },
+        ExpandableDetail { label: "Analyzed".to_string(), value: analyses.len().to_string() },
+        ExpandableDetail { label: "Mode".to_string(), value: "V6 Hybrid (GPT→Claude)".to_string() },
+    ]));
+
+    eprintln!(
+        "[V6HybridLoop] Starting with {} files, {} analyses from GPT-5-nano",
+        file_count, analyses.len()
+    );
+
+    // 2. Build hybrid context from GPT-5-nano analyses
+    let context = build_hybrid_context(
+        &target_folder.to_string_lossy(),
+        &analyses,
+        user_request,
+    );
+
+    eprintln!(
+        "[V6HybridLoop] Built hybrid context: {} chars",
+        context.len()
+    );
+
+    // 3. Initialize HTTP client and tools
+    let tools = get_v2_organize_tools();
+    let client = Client::builder()
+        .timeout(Duration::from_secs(180))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    let api_key = CredentialManager::get_api_key("anthropic")?;
+    let mut rate_limiter = RateLimitManager::new();
+
+    // V6 uses fewer iterations since analyses are pre-computed
+    const V6_MAX_ITERATIONS: usize = 3;
+
+    for iteration in 0..V6_MAX_ITERATIONS {
+        // Rate limiting between iterations
+        if iteration > 0 {
+            let delay = rate_limiter.get_delay();
+            eprintln!("[V6HybridLoop] Waiting {:?} before iteration {}", delay, iteration + 1);
+            tokio::time::sleep(delay).await;
+        }
+
+        // Check coverage
+        let coverage = vfs.coverage();
+        let organized = vfs.organized_count();
+
+        // Emit progress for UI
+        if let Some(ref emit_progress) = progress_emitter {
+            emit_progress(ProgressEvent {
+                phase: "planning".to_string(),
+                current: organized,
+                total: file_count,
+                message: format!(
+                    "Claude planning iteration {} - {:.0}% organized",
+                    iteration + 1,
+                    coverage * 100.0
+                ),
+            });
+        }
+
+        event_emitter("thinking", "Claude is creating organization rules...", None);
+
+        if vfs.coverage_target_reached() {
+            eprintln!("[V6HybridLoop] Coverage target reached: {:.1}%", coverage * 100.0);
+            break;
+        }
+
+        eprintln!(
+            "[V6HybridLoop] Iteration {}: coverage={:.1}%, organized={}",
+            iteration + 1,
+            coverage * 100.0,
+            organized
+        );
+
+        // Build messages with cached context
+        let messages = vec![ToolMessage {
+            role: "user".to_string(),
+            content: vec![ToolMessageContent::text_cached(&context)],
+        }];
+
+        // Use Sonnet for planning (Claude's strength)
+        let model = ClaudeModel::Sonnet;
+
+        // Send request
+        let request = ToolApiRequest {
+            model: model.as_str().to_string(),
+            max_tokens: MAX_TOKENS,
+            system: V6_HYBRID_SYSTEM_PROMPT.to_string(),
+            messages,
+            tools: Some(tools.clone()),
+        };
+
+        // Make API call with retry logic
+        let response = send_api_request_with_retry(&client, &api_key, &request, &mut rate_limiter).await?;
+
+        // Update rate limiter
+        rate_limiter.update_from_response(&response);
+
+        // Process response
+        let api_response: ToolApiResponse = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+        eprintln!("[V6HybridLoop] stop_reason: {}", api_response.stop_reason);
+
+        // Track if any rules were applied this iteration
+        let prev_organized = vfs.organized_count();
+
+        // Process tool calls
+        for block in &api_response.content {
+            if let ContentBlockResponse::ToolUse { id: _, name, input } = block {
+                eprintln!("[V6HybridLoop] Tool use: {}", name);
+
+                // Emit event for UI
+                match name.as_str() {
+                    "apply_organization_rules" => {
+                        let rules = input.get("rules").and_then(|v| v.as_array());
+                        let count = rules.map(|a| a.len()).unwrap_or(0);
+                        event_emitter(
+                            "applying_rules",
+                            &format!("Applying {} rules based on entity analysis", count),
+                            Some(vec![ExpandableDetail {
+                                label: "Rules".to_string(),
+                                value: count.to_string(),
+                            }]),
+                        );
+                    }
+                    "commit_plan" => {
+                        event_emitter("committing", "Finalizing plan...", None);
+                    }
+                    _ => {}
+                }
+
+                // Execute tool
+                let result = execute_v2_tool(name, input, &mut vfs);
+
+                match result {
+                    V2ToolResult::Commit(plan) => {
+                        eprintln!(
+                            "[V6HybridLoop] Plan committed: {} operations",
+                            plan.operations.len()
+                        );
+                        event_emitter(
+                            "committing",
+                            &format!("Plan created with {} operations", plan.operations.len()),
+                            Some(vec![
+                                ExpandableDetail {
+                                    label: "Operations".to_string(),
+                                    value: plan.operations.len().to_string(),
+                                },
+                                ExpandableDetail {
+                                    label: "Coverage".to_string(),
+                                    value: format!("{:.1}%", vfs.coverage() * 100.0),
+                                },
+                            ]),
+                        );
+                        return Ok(plan);
+                    }
+                    V2ToolResult::Continue(_output) => {
+                        // Continue processing
+                    }
+                    V2ToolResult::Error(err) => {
+                        eprintln!("[V6HybridLoop] Tool error: {}", err);
+                        event_emitter("error", &format!("Tool error: {}", err), None);
+                    }
+                }
+            }
+        }
+
+        // Check if any new files were matched
+        let new_organized = vfs.organized_count();
+        let matched_this_iteration = new_organized - prev_organized;
+
+        eprintln!(
+            "[V6HybridLoop] Iteration {} matched {} new files (total: {})",
+            iteration + 1,
+            matched_this_iteration,
+            new_organized
+        );
+
+        // Anti-infinite loop
+        if matched_this_iteration == 0 && iteration > 0 {
+            eprintln!("[V6HybridLoop] No new matches, stopping iteration");
+            break;
+        }
+    }
+
+    // Final check: commit what we have
+    if !vfs.operations().is_empty() {
+        let coverage = vfs.coverage();
+        eprintln!(
+            "[V6HybridLoop] Final commit: {} operations, {:.1}% coverage",
+            vfs.operations().len(),
+            coverage * 100.0
+        );
+
+        let plan = OrganizePlan {
+            plan_id: format!("plan-v6-hybrid-{}", chrono::Utc::now().timestamp_millis()),
+            description: format!(
+                "V6 Hybrid organization (GPT-5-nano → Claude): {:.1}% coverage, {} files analyzed",
+                coverage * 100.0,
+                analyses.len()
+            ),
+            operations: vfs
+                .operations()
+                .iter()
+                .map(|op| crate::jobs::OrganizeOperation {
+                    op_id: op.op_id.clone(),
+                    op_type: op.op_type.to_string(),
+                    source: op.source.clone(),
+                    destination: op.destination.clone(),
+                    path: op.path.clone(),
+                    new_name: op.new_name.clone(),
+                })
+                .collect(),
+            target_folder: vfs.organization_root().to_string_lossy().to_string(),
+        };
+
+        event_emitter(
+            "committing",
+            &format!("Plan ready: {} operations", plan.operations.len()),
+            Some(vec![
+                ExpandableDetail {
+                    label: "Operations".to_string(),
+                    value: plan.operations.len().to_string(),
+                },
+                ExpandableDetail {
+                    label: "Coverage".to_string(),
+                    value: format!("{:.1}%", coverage * 100.0),
+                },
+            ]),
+        );
+
+        return Ok(plan);
+    }
+
+    // No operations created
+    Err(format!(
+        "V6 Hybrid completed but created no operations for {} files. \
+         The folder may already be well-organized.",
+        file_count
+    ))
 }
 
 #[cfg(test)]

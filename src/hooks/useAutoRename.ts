@@ -2,7 +2,7 @@ import { useEffect, useCallback, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { showRenameToast, showError } from '../stores/toast-store';
-import { useDownloadsWatcherStore, selectRuleByMatch, type WatchedFolder } from '../stores/downloads-watcher-store';
+import { useDownloadsWatcherStore, selectRuleByMatch, selectFolderByPath } from '../stores/downloads-watcher-store';
 
 interface FileCreatedEvent {
   id: string;
@@ -35,6 +35,7 @@ const MAX_QUEUE_SIZE = 50;
 export function useAutoRename(enabled: boolean) {
   const processingRef = useRef<Set<string>>(new Set());
   const queueRef = useRef<FileCreatedEvent[]>([]);
+  const queuePathsRef = useRef<Set<string>>(new Set()); // O(1) duplicate check
   const isProcessingQueueRef = useRef(false);
   const lastProcessTimeRef = useRef(0);
 
@@ -87,9 +88,8 @@ export function useAutoRename(enabled: boolean) {
       });
 
       if (result.success) {
-        // Find the folder to get ID and display name
-        const { watchedFolders } = useDownloadsWatcherStore.getState();
-        const folder = watchedFolders.find((f: WatchedFolder) => f.path === event.watchedFolder);
+        // O(1) folder lookup
+        const folder = selectFolderByPath(event.watchedFolder);
         const folderId = folder?.id || `folder-${Date.now()}`;
         const folderName = folder?.name || event.watchedFolder.split('/').pop() || 'Unknown';
 
@@ -136,6 +136,9 @@ export function useAutoRename(enabled: boolean) {
     try {
       const event = queueRef.current.shift();
       if (event) {
+        // Remove from paths Set (O(1))
+        queuePathsRef.current.delete(event.path);
+
         // Rate limiting: wait if we called API too recently
         const timeSinceLast = Date.now() - lastProcessTimeRef.current;
         if (timeSinceLast < RATE_LIMIT_MS) {
@@ -157,28 +160,34 @@ export function useAutoRename(enabled: boolean) {
   }, [processFile]);
 
   const handleFileCreated = useCallback((event: FileCreatedEvent) => {
-    // Skip if already in queue or processing
+    // O(1) checks using Sets
     if (processingRef.current.has(event.path)) {
       return;
     }
-    if (queueRef.current.some((e) => e.path === event.path)) {
+    if (queuePathsRef.current.has(event.path)) {
       return;
     }
 
     // Add to queue (with size limit to prevent memory issues)
     if (queueRef.current.length >= MAX_QUEUE_SIZE) {
       console.warn('Auto-rename queue full, dropping oldest items');
-      queueRef.current = queueRef.current.slice(-MAX_QUEUE_SIZE / 2);
+      const droppedCount = Math.floor(MAX_QUEUE_SIZE / 2);
+      const droppedEvents = queueRef.current.splice(0, droppedCount);
+      // Also remove from paths Set
+      droppedEvents.forEach((e) => queuePathsRef.current.delete(e.path));
     }
 
+    // Add to both queue and Set (O(1))
     queueRef.current.push(event);
+    queuePathsRef.current.add(event.path);
     processQueue();
   }, [processQueue]);
 
   useEffect(() => {
     if (!enabled) {
-      // Clear queue when disabled
+      // Clear queue and paths Set when disabled
       queueRef.current = [];
+      queuePathsRef.current.clear();
       return;
     }
 

@@ -44,15 +44,15 @@ export function SimulationControls({
         </div>
       )}
 
-      {/* Button row */}
-      <div className="flex items-center gap-2">
+      {/* Button row - all buttons equal width */}
+      <div className="grid grid-cols-3 gap-2">
         {/* Edit Plan button (optional) */}
-        {onEdit && (
+        {onEdit ? (
           <button
             onClick={onEdit}
             disabled={isApplying}
             className={cn(
-              'flex items-center gap-1.5 px-3 py-1.5 rounded-md',
+              'flex items-center justify-center gap-1.5 px-3 py-2 rounded-md',
               'text-xs font-medium transition-colors',
               'bg-white/5 text-gray-300 hover:bg-white/10',
               'disabled:opacity-50 disabled:cursor-not-allowed'
@@ -61,17 +61,16 @@ export function SimulationControls({
             <Edit size={12} />
             Edit Plan
           </button>
+        ) : (
+          <div /> /* Empty grid cell */
         )}
-
-        {/* Spacer */}
-        <div className="flex-1" />
 
         {/* Cancel button */}
         <button
           onClick={onCancel}
           disabled={isApplying}
           className={cn(
-            'flex items-center gap-1.5 px-3 py-1.5 rounded-md',
+            'flex items-center justify-center gap-1.5 px-3 py-2 rounded-md',
             'text-xs font-medium transition-colors',
             'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-gray-300',
             'disabled:opacity-50 disabled:cursor-not-allowed'
@@ -86,7 +85,7 @@ export function SimulationControls({
           onClick={onApply}
           disabled={hasConflicts || isApplying}
           className={cn(
-            'flex items-center gap-1.5 px-4 py-1.5 rounded-md',
+            'flex items-center justify-center gap-1.5 px-3 py-2 rounded-md',
             'text-xs font-medium transition-all',
             'bg-gradient-to-r from-green-600 to-green-500',
             'text-white shadow-sm',

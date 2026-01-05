@@ -6,6 +6,7 @@ use image::{DynamicImage, ImageFormat};
 use std::io::Cursor;
 use std::path::Path;
 
+#[allow(dead_code)]
 /// Maximum image dimension (width or height)
 const MAX_DIMENSION: u32 = 1600;
 
@@ -14,6 +15,7 @@ const MAX_DIMENSION: u32 = 1600;
 /// - Resizes if too large
 /// - Converts to JPEG for optimal size
 /// - Returns base64-ready bytes
+#[allow(dead_code)]
 pub fn prepare_image_for_vision(image_data: &[u8]) -> Result<Vec<u8>, String> {
     let img = image::load_from_memory(image_data)
         .map_err(|e| format!("Failed to load image: {}", e))?;
@@ -31,6 +33,7 @@ pub fn prepare_image_for_vision(image_data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 /// Resize image if it exceeds maximum dimensions
+#[allow(dead_code)]
 fn resize_if_needed(img: DynamicImage) -> DynamicImage {
     let (width, height) = (img.width(), img.height());
 
@@ -46,6 +49,7 @@ fn resize_if_needed(img: DynamicImage) -> DynamicImage {
 }
 
 /// Check if a file extension is an image type we can analyze
+#[allow(dead_code)]
 pub fn is_image_extension(ext: Option<&str>) -> bool {
     match ext {
         Some(e) => matches!(
@@ -88,6 +92,7 @@ pub fn is_text_extension(ext: Option<&str>) -> bool {
 
 /// Estimate tokens needed for an image
 /// Based on Grok's vision pricing model
+#[allow(dead_code)]
 pub fn estimate_image_tokens(image_bytes: usize, detail: &str) -> u32 {
     match detail {
         "low" => 85, // Fixed cost for low detail
@@ -101,6 +106,7 @@ pub fn estimate_image_tokens(image_bytes: usize, detail: &str) -> u32 {
 }
 
 /// Load and prepare an image file for vision API
+#[allow(dead_code)]
 pub async fn load_image_for_vision(path: &Path) -> Result<Vec<u8>, String> {
     let data = tokio::fs::read(path).await
         .map_err(|e| format!("Failed to read image {}: {}", path.display(), e))?;

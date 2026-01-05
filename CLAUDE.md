@@ -103,7 +103,7 @@ src-tauri/src/
 | Category | Commands |
 |----------|----------|
 | **Chat** | `chat_stream`, `abort_chat`, `list_files_for_mention` |
-| **AI Organize** | `generate_organize_plan_agentic`, `get_rename_suggestion` |
+| **AI Organize** | `generate_organize_plan_hybrid`, `get_rename_suggestion` |
 | **VFS** | `vfs_simulate_plan`, `vfs_list_dir`, `vfs_search_content` |
 | **WAL** | `wal_check_recovery`, `wal_resume_job`, `wal_execute_journal` |
 | **Execution** | `execute_plan_parallel` (DAG-based) |
@@ -113,8 +113,9 @@ src-tauri/src/
 ### Models
 | Model | Use Case |
 |-------|----------|
-| Claude Haiku 4.5 | Fast analysis, naming conventions, exploration |
-| Claude Sonnet 4.5 | Planning, organization, tool use |
+| GPT-5-nano (OpenAI) | File exploration, entity extraction, document classification |
+| Claude Haiku 4.5 | Fast analysis, exploration fallback |
+| Claude Sonnet 4.5 | Organization planning, rule creation |
 | Claude Opus 4.5 | Extended thinking, complex reasoning |
 
 ### Chat Agent (ReAct Loop)

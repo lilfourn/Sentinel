@@ -1,8 +1,8 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type { NamingConvention } from '../types/naming-convention';
 import type { OperationStatus, WalEntry, WalRecoveryInfo, WalRecoveryResult } from '../types/ghost';
+import type { EditableOperation } from '../types/plan-edit';
 import { queryClient } from '../lib/query-client';
 
 // Module-level storage for active listener cleanup functions
@@ -163,12 +163,6 @@ interface OrganizeState {
   userInstruction: string;
   awaitingInstruction: boolean;
 
-  // Naming convention selection state (deprecated - kept for compatibility)
-  awaitingConventionSelection: boolean;
-  suggestedConventions: NamingConvention[] | null;
-  selectedConvention: NamingConvention | null;
-  conventionSkipped: boolean;
-
   // Latest event for dynamic status display
   latestEvent: { type: string; detail: string } | null;
 
@@ -179,6 +173,10 @@ interface OrganizeState {
 
   // Detailed execution errors for error dialog display
   executionErrors: ExecutionError[];
+
+  // Plan edit modal state
+  isPlanEditModalOpen: boolean;
+  editableOperations: EditableOperation[];
 }
 
 // Info about an interrupted job for recovery UI
@@ -223,10 +221,6 @@ interface OrganizeActions {
   setUserInstruction: (instruction: string) => void;
   submitInstruction: () => Promise<void>;
 
-  // Naming convention actions (deprecated - kept for compatibility)
-  selectConvention: (convention: NamingConvention) => void;
-  skipConventionSelection: () => void;
-
   // New phase state machine actions
   transitionTo: (phase: OrganizePhase) => void;
   acceptPlan: () => Promise<void>;
@@ -240,6 +234,15 @@ interface OrganizeActions {
 
   // Analysis progress updates for progress bar
   setAnalysisProgress: (progress: AnalysisProgressState | null) => void;
+
+  // Plan edit modal actions
+  openPlanEditModal: () => void;
+  closePlanEditModal: () => void;
+  applyPlanEdits: () => void;
+  toggleOperation: (opId: string) => void;
+  toggleOperationGroup: (targetFolder: string) => void;
+  updateOperationDestination: (opId: string, newDestination: string) => void;
+  updateOperationNewName: (opId: string, newName: string) => void;
 }
 
 let thoughtId = 0;
@@ -327,16 +330,16 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
   interruptedJob: null,
   userInstruction: '',
   awaitingInstruction: false,
-  awaitingConventionSelection: false,
-  suggestedConventions: null,
-  selectedConvention: null,
-  conventionSkipped: false,
   latestEvent: null,
   executionProgress: null,
   analysisProgress: null,
   lastCompletedAt: null,
   completedTargetFolder: null,
   executionErrors: [],
+
+  // Plan edit modal state
+  isPlanEditModalOpen: false,
+  editableOperations: [],
 
   // Thought actions
   addThought: (type, content, detail, expandableDetails) => set((state) => ({
@@ -388,10 +391,6 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
       currentOpIndex: -1,
       userInstruction: '',
       awaitingInstruction: true,
-      awaitingConventionSelection: false,
-      suggestedConventions: null,
-      selectedConvention: null,
-      conventionSkipped: false,
       phase: 'idle',
       executionErrors: [],
     });
@@ -429,10 +428,6 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
       analysisProgress: null,
       userInstruction: '',
       awaitingInstruction: false,
-      awaitingConventionSelection: false,
-      suggestedConventions: null,
-      selectedConvention: null,
-      conventionSkipped: false,
       executionErrors: [],
     });
   },
@@ -624,40 +619,13 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
         // Event listener failed, continue without it
       }
 
-      // Check if xAI key is configured for Grok pipeline
-      let rawPlan: OrganizePlan;
-      try {
-        const providers = await invoke<{ provider: string; configured: boolean }[]>('get_configured_providers');
-        const hasXai = providers.find(p => p.provider === 'xai')?.configured;
-
-        if (hasXai) {
-          // Use new Grok multi-model pipeline
-          get().addThought('analyzing', 'Using multi-model pipeline', 'OpenAI workers + Grok orchestrator');
-
-          // Initialize Grok (will use stored xAI key)
-          await invoke('grok_init', { apiKey: null });
-
-          // Generate plan using Grok pipeline
-          rawPlan = await invoke<OrganizePlan>('grok_generate_plan', {
-            path: targetFolder,
-            userInstruction: userInstruction,
-          });
-        } else {
-          // Fall back to V4 Anthropic-based system
-          get().addThought('analyzing', 'Using V4 organization', 'Claude-based planning');
-          rawPlan = await invoke<OrganizePlan>('generate_organize_plan_agentic', {
-            folderPath: targetFolder,
-            userRequest: userInstruction,
-          });
-        }
-      } catch (providerError) {
-        // If provider check fails, fall back to V4
-        console.warn('[Organize] Provider check failed, using V4:', providerError);
-        rawPlan = await invoke<OrganizePlan>('generate_organize_plan_agentic', {
-          folderPath: targetFolder,
-          userRequest: userInstruction,
-        });
-      }
+      // V6 Hybrid Pipeline: GPT-5-nano exploration + Claude planning
+      // OpenAI key is expected from OPENAI_API_KEY environment variable
+      get().addThought('analyzing', 'Using V6 Hybrid pipeline', 'GPT-5-nano explore → Claude plan');
+      const rawPlan = await invoke<OrganizePlan>('generate_organize_plan_hybrid', {
+        folderPath: targetFolder,
+        userRequest: userInstruction,
+      });
 
       // Clean up listeners (analysis complete)
       cleanupAnalysisListeners();
@@ -738,30 +706,6 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
         phase: 'failed',
       });
     }
-  },
-
-  // Select a naming convention and continue with plan generation (deprecated)
-  selectConvention: (convention: NamingConvention) => {
-    set({
-      selectedConvention: convention,
-      conventionSkipped: false,
-      awaitingConventionSelection: false,
-    });
-
-    // Continue with plan generation
-    continueWithConvention(get, set);
-  },
-
-  // Skip naming convention selection and continue with folder-only organization
-  skipConventionSelection: () => {
-    set({
-      selectedConvention: null,
-      conventionSkipped: true,
-      awaitingConventionSelection: false,
-    });
-
-    // Continue with plan generation
-    continueWithConvention(get, set);
   },
 
   // New phase state machine actions
@@ -1185,120 +1129,118 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
   setAnalysisProgress: (progress: AnalysisProgressState | null) => {
     set({ analysisProgress: progress });
   },
+
+  // Plan edit modal actions
+  openPlanEditModal: () => {
+    const { currentPlan } = get();
+    if (!currentPlan) return;
+
+    // Create editable copies of all operations
+    const editableOps: EditableOperation[] = currentPlan.operations.map((op) => ({
+      ...op,
+      enabled: true,
+      isModified: false,
+      originalDestination: op.destination,
+      originalNewName: op.newName,
+    }));
+
+    set({
+      isPlanEditModalOpen: true,
+      editableOperations: editableOps,
+    });
+  },
+
+  closePlanEditModal: () => {
+    set({
+      isPlanEditModalOpen: false,
+      editableOperations: [],
+    });
+  },
+
+  applyPlanEdits: () => {
+    const { currentPlan, editableOperations } = get();
+    if (!currentPlan) return;
+
+    // Filter to only enabled operations and strip editing metadata
+    const filteredOps: OrganizeOperation[] = editableOperations
+      .filter((op) => op.enabled)
+      .map(({ enabled, isModified, originalDestination, originalNewName, ...op }) => op);
+
+    // Update the plan with filtered operations
+    const updatedPlan: OrganizePlan = {
+      ...currentPlan,
+      operations: filteredOps,
+    };
+
+    set({
+      currentPlan: updatedPlan,
+      isPlanEditModalOpen: false,
+      editableOperations: [],
+    });
+
+    // Note: Ghost preview will be rebuilt by vfs-store when it detects plan change
+  },
+
+  toggleOperation: (opId: string) => {
+    set((state) => ({
+      editableOperations: state.editableOperations.map((op) =>
+        op.opId === opId ? { ...op, enabled: !op.enabled, isModified: true } : op
+      ),
+    }));
+  },
+
+  toggleOperationGroup: (targetFolder: string) => {
+    const { editableOperations } = get();
+
+    // Find operations in this group
+    const groupOps = editableOperations.filter((op) => {
+      if (op.type === 'create_folder') {
+        return op.path === targetFolder;
+      }
+      if (op.type === 'move' || op.type === 'copy') {
+        const destFolder = op.destination?.split('/').slice(0, -1).join('/');
+        return destFolder === targetFolder;
+      }
+      if (op.type === 'rename') {
+        const parentFolder = op.path?.split('/').slice(0, -1).join('/');
+        return parentFolder === targetFolder;
+      }
+      return false;
+    });
+
+    // Determine new state (if any enabled, disable all; otherwise enable all)
+    const anyEnabled = groupOps.some((op) => op.enabled);
+    const newEnabled = !anyEnabled;
+
+    set((state) => ({
+      editableOperations: state.editableOperations.map((op) => {
+        const inGroup = groupOps.find((g) => g.opId === op.opId);
+        if (inGroup) {
+          return { ...op, enabled: newEnabled, isModified: true };
+        }
+        return op;
+      }),
+    }));
+  },
+
+  updateOperationDestination: (opId: string, newDestination: string) => {
+    set((state) => ({
+      editableOperations: state.editableOperations.map((op) =>
+        op.opId === opId
+          ? { ...op, destination: newDestination, isModified: true }
+          : op
+      ),
+    }));
+  },
+
+  updateOperationNewName: (opId: string, newName: string) => {
+    set((state) => ({
+      editableOperations: state.editableOperations.map((op) =>
+        op.opId === opId ? { ...op, newName, isModified: true } : op
+      ),
+    }));
+  },
 }));
-
-// Phase 2: Continue with plan generation after convention selection
-async function continueWithConvention(
-  get: () => OrganizeState & OrganizeActions,
-  set: (state: Partial<OrganizeState>) => void
-) {
-  const state = get();
-  const { targetFolder, selectedConvention, conventionSkipped } = state;
-
-  if (!targetFolder) return;
-
-  set({ isAnalyzing: true });
-
-  state.addThought('planning', 'Generating organization plan...',
-    conventionSkipped ? 'Skipping file renaming' : `Using ${selectedConvention?.name} convention`);
-
-  try {
-    // Set up event listener for streaming thoughts from Rust
-    let unlisten: UnlistenFn | null = null;
-    try {
-      unlisten = await listen<{ type: string; content: string; detail?: string; expandableDetails?: ThoughtDetail[] }>('ai-thought', (event) => {
-        const { type, content, detail, expandableDetails } = event.payload;
-        get().addThought(type as ThoughtType, content, detail, expandableDetails);
-      });
-    } catch {
-      // Event listener failed, continue without it
-    }
-
-    const rawPlan = await invoke<OrganizePlan>('generate_organize_plan_with_convention', {
-      folderPath: targetFolder,
-      userRequest: 'Organize this folder by grouping files based on their content type and purpose. Create logical folder structures.',
-      convention: conventionSkipped ? null : selectedConvention,
-    });
-
-    // Clean up listener
-    if (unlisten) unlisten();
-
-    // Defensive validation of plan structure
-    if (!rawPlan) {
-      throw new Error('No plan returned from AI agent');
-    }
-    if (!rawPlan.operations) {
-      throw new Error('Plan missing operations array');
-    }
-    if (!Array.isArray(rawPlan.operations)) {
-      throw new Error('Operations is not an array');
-    }
-
-    // Add risk levels to operations (backend doesn't include them)
-    const plan = addRiskLevels(rawPlan);
-
-    // Handle "already organized" case (0 operations)
-    if (plan.operations.length === 0) {
-      state.addThought('complete', 'Folder is already well organized!', plan.description || 'No changes needed');
-      set({
-        currentPlan: plan,
-        isAnalyzing: false,
-        isExecuting: false,
-      });
-
-      // Mark job as complete since nothing to do
-      const jobId = get().currentJobId;
-      if (jobId && !jobId.startsWith('local-')) {
-        invoke('complete_organize_job', { jobId }).catch(console.error);
-        setTimeout(() => invoke('clear_organize_job').catch(console.error), 1000);
-      }
-      return;
-    }
-
-    state.addThought('planning', `Plan ready: ${plan.operations.length} operations`, plan.description);
-
-    // Persist the plan to job state
-    const currentJobId = get().currentJobId;
-    if (currentJobId && !currentJobId.startsWith('local-')) {
-      try {
-        await invoke('set_job_plan', {
-          jobId: currentJobId,
-          planId: plan.planId,
-          description: plan.description,
-          operations: plan.operations,
-          targetFolder: plan.targetFolder,
-        });
-      } catch (e) {
-        console.error('[Organize] Failed to persist plan:', e);
-      }
-    }
-
-    // V5: Pause at simulation phase for user approval
-    // Instead of auto-executing, set phase to 'simulation' so user can review and approve
-    set({
-      currentPlan: plan,
-      isAnalyzing: false,
-      phase: 'simulation',
-    });
-
-    // User must now click "Apply" in SimulationControls to call acceptPlanParallel()
-
-  } catch (error) {
-    state.addThought('error', 'Organization failed', String(error));
-
-    // Persist error
-    const jobId = get().currentJobId;
-    if (jobId && !jobId.startsWith('local-')) {
-      invoke('fail_organize_job', { jobId, error: String(error) }).catch(console.error);
-    }
-
-    set({
-      isAnalyzing: false,
-      analysisError: String(error),
-      phase: 'failed',
-    });
-  }
-}
 
 // Helper to describe an operation
 function getOperationDescription(op: OrganizeOperation): string {

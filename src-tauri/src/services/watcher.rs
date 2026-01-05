@@ -21,7 +21,8 @@ pub struct FileChangeEvent {
 }
 
 /// Individual folder watcher
-struct FolderWatcher {
+#[allow(dead_code)]
+pub(crate) struct FolderWatcher {
     debouncer: Debouncer<RecommendedWatcher, RecommendedCache>,
     path: PathBuf,
 }
@@ -29,7 +30,7 @@ struct FolderWatcher {
 /// Watcher state - supports multiple folders
 pub struct WatcherState {
     /// Map of folder path -> watcher
-    pub watchers: HashMap<String, FolderWatcher>,
+    pub(crate) watchers: HashMap<String, FolderWatcher>,
     /// Legacy single watcher path (for backwards compatibility)
     pub watching_path: Option<PathBuf>,
     pub enabled: bool,
@@ -351,23 +352,32 @@ fn read_content_preview(path: &PathBuf, extension: &Option<String>, watched_fold
         return None;
     }
 
-    // Read first 4KB
-    match std::fs::read(path) {
-        Ok(bytes) => {
-            let preview_bytes = &bytes[..std::cmp::min(MAX_PREVIEW_BYTES, bytes.len())];
+    // SECURITY: Use bounded read - only read MAX_PREVIEW_BYTES, never more
+    // This prevents memory exhaustion from large files (DoS attack vector)
+    use std::io::Read;
 
-            // SECURITY: Check for binary content (high proportion of non-printable chars)
-            let non_printable_count = preview_bytes.iter()
-                .filter(|&&b| b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t')
-                .count();
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return None,
+    };
 
-            // If more than 10% non-printable, likely binary file
-            if non_printable_count > preview_bytes.len() / 10 {
-                return None;
-            }
+    // take() limits reads to exactly MAX_PREVIEW_BYTES - never reads entire file
+    let mut reader = file.take(MAX_PREVIEW_BYTES as u64);
+    let mut buffer = Vec::with_capacity(MAX_PREVIEW_BYTES);
 
-            String::from_utf8(preview_bytes.to_vec()).ok()
-        }
-        Err(_) => None,
+    if reader.read_to_end(&mut buffer).is_err() {
+        return None;
     }
+
+    // SECURITY: Check for binary content (high proportion of non-printable chars)
+    let non_printable_count = buffer.iter()
+        .filter(|&&b| b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t')
+        .count();
+
+    // If more than 10% non-printable, likely binary file
+    if non_printable_count > buffer.len() / 10 {
+        return None;
+    }
+
+    String::from_utf8(buffer).ok()
 }

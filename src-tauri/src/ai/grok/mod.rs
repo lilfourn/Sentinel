@@ -16,7 +16,7 @@
 mod cache;
 mod client;
 mod explore_agent;
-mod openai_worker;
+pub mod openai_worker;
 mod orchestrator;
 mod pdf_renderer;
 mod summarizer;
@@ -27,8 +27,10 @@ pub mod document_parser;
 pub mod integration;
 pub mod types;
 
-// Public API - used by commands/grok.rs
+// Public API - used by commands/grok.rs and commands/ai.rs
 pub use integration::{GrokOrganizer, ScanResult};
+#[allow(unused_imports)]
+pub use openai_worker::FileAnalysis;
 pub use types::{
     sanitize_filename, sanitize_folder_path, AnalysisPhase, DocumentAnalysis, OrganizationPlan,
 };

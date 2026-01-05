@@ -98,21 +98,46 @@ export const DEFAULT_RULES: CustomRenameRule[] = [
 // ============================================================================
 
 interface DownloadsWatcherState {
-  // History
+  // History - O(1) lookup via historyIndex
   history: RenameHistoryItem[];
+  historyIndex: Map<string, number>; // id -> array index for O(1) lookup
   maxHistoryItems: number;
 
-  // Watched folders
+  // Watched folders - O(1) lookup via Maps
   watchedFolders: WatchedFolder[];
+  folderById: Map<string, WatchedFolder>;   // id -> folder for O(1) lookup
+  folderByPath: Map<string, WatchedFolder>; // path -> folder for O(1) lookup
 
-  // Custom rules
+  // Custom rules - O(1) sorted access via pre-computed array
   customRules: CustomRenameRule[];
+  sortedEnabledRules: CustomRenameRule[]; // Pre-sorted for O(1) access
   rulesEnabled: boolean;
 
   // Status
   isWatching: boolean;
   processingFiles: Set<string>;
 }
+
+// ============================================================================
+// Helpers for O(1) index maintenance
+// ============================================================================
+
+/** Rebuild history index - O(n) but only on mutation, not lookup */
+const rebuildHistoryIndex = (history: RenameHistoryItem[]): Map<string, number> => {
+  const index = new Map<string, number>();
+  history.forEach((item, i) => index.set(item.id, i));
+  return index;
+};
+
+/** Rebuild folder indices - O(n) but only on mutation, not lookup */
+const rebuildFolderIndices = (folders: WatchedFolder[]) => ({
+  folderById: new Map(folders.map((f) => [f.id, f])),
+  folderByPath: new Map(folders.map((f) => [f.path, f])),
+});
+
+/** Compute sorted enabled rules - O(n log n) but only on mutation */
+const computeSortedEnabledRules = (rules: CustomRenameRule[]): CustomRenameRule[] =>
+  rules.filter((r) => r.enabled).sort((a, b) => a.priority - b.priority);
 
 interface DownloadsWatcherActions {
   // History actions
@@ -152,16 +177,20 @@ interface DownloadsWatcherActions {
 export const useDownloadsWatcherStore = create<DownloadsWatcherState & DownloadsWatcherActions>()(
   persist(
     (set, get) => ({
-      // Initial state
+      // Initial state with O(1) indices
       history: [],
+      historyIndex: new Map(),
       maxHistoryItems: 100,
       watchedFolders: [],
+      folderById: new Map(),
+      folderByPath: new Map(),
       customRules: DEFAULT_RULES,
+      sortedEnabledRules: computeSortedEnabledRules(DEFAULT_RULES),
       rulesEnabled: true,
       isWatching: false,
       processingFiles: new Set(),
 
-      // History actions
+      // History actions - O(1) lookup, O(n) mutation
       addToHistory: (item) => {
         const newItem: RenameHistoryItem = {
           ...item,
@@ -173,27 +202,38 @@ export const useDownloadsWatcherStore = create<DownloadsWatcherState & Downloads
 
         set((state) => {
           const newHistory = [newItem, ...state.history].slice(0, state.maxHistoryItems);
-          return { history: newHistory };
+          return {
+            history: newHistory,
+            historyIndex: rebuildHistoryIndex(newHistory),
+          };
         });
       },
 
       markUndone: (id) => {
-        set((state) => ({
-          history: state.history.map((item) =>
-            item.id === id ? { ...item, undone: true, canUndo: false } : item
-          ),
-        }));
+        set((state) => {
+          // O(1) lookup
+          const index = state.historyIndex.get(id);
+          if (index === undefined) return state;
+
+          const newHistory = [...state.history];
+          newHistory[index] = { ...newHistory[index], undone: true, canUndo: false };
+          return { history: newHistory };
+        });
       },
 
-      clearHistory: () => set({ history: [] }),
+      clearHistory: () => set({ history: [], historyIndex: new Map() }),
 
       removeFromHistory: (id) => {
-        set((state) => ({
-          history: state.history.filter((item) => item.id !== id),
-        }));
+        set((state) => {
+          const newHistory = state.history.filter((item) => item.id !== id);
+          return {
+            history: newHistory,
+            historyIndex: rebuildHistoryIndex(newHistory),
+          };
+        });
       },
 
-      // Folder actions
+      // Folder actions - O(1) lookup via Maps
       addWatchedFolder: (path, name) => {
         const folderName = name || path.split("/").pop() || path;
         const newFolder: WatchedFolder = {
@@ -205,64 +245,99 @@ export const useDownloadsWatcherStore = create<DownloadsWatcherState & Downloads
         };
 
         set((state) => {
-          // Don't add duplicates
-          if (state.watchedFolders.some((f) => f.path === path)) {
+          // O(1) duplicate check
+          if (state.folderByPath.has(path)) {
             return state;
           }
-          return { watchedFolders: [...state.watchedFolders, newFolder] };
+          const newFolders = [...state.watchedFolders, newFolder];
+          return {
+            watchedFolders: newFolders,
+            ...rebuildFolderIndices(newFolders),
+          };
         });
       },
 
       removeWatchedFolder: (id) => {
-        set((state) => ({
-          watchedFolders: state.watchedFolders.filter((f) => f.id !== id),
-        }));
+        set((state) => {
+          // O(1) lookup
+          const folder = state.folderById.get(id);
+          if (!folder) return state;
+
+          const newFolders = state.watchedFolders.filter((f) => f.id !== id);
+          return {
+            watchedFolders: newFolders,
+            ...rebuildFolderIndices(newFolders),
+          };
+        });
       },
 
       toggleFolderEnabled: (id) => {
-        set((state) => ({
-          watchedFolders: state.watchedFolders.map((f) =>
+        set((state) => {
+          // O(1) lookup
+          if (!state.folderById.has(id)) return state;
+
+          const newFolders = state.watchedFolders.map((f) =>
             f.id === id ? { ...f, enabled: !f.enabled } : f
-          ),
-        }));
+          );
+          return {
+            watchedFolders: newFolders,
+            ...rebuildFolderIndices(newFolders),
+          };
+        });
       },
 
       getEnabledFolders: () => {
         return get().watchedFolders.filter((f) => f.enabled);
       },
 
-      // Rule actions
+      // Rule actions - maintain pre-sorted list
       addRule: (rule) => {
         const newRule: CustomRenameRule = {
           ...rule,
           id: `rule-${Date.now()}`,
         };
 
-        set((state) => ({
-          customRules: [...state.customRules, newRule],
-        }));
+        set((state) => {
+          const newRules = [...state.customRules, newRule];
+          return {
+            customRules: newRules,
+            sortedEnabledRules: computeSortedEnabledRules(newRules),
+          };
+        });
       },
 
       updateRule: (id, updates) => {
-        set((state) => ({
-          customRules: state.customRules.map((r) =>
+        set((state) => {
+          const newRules = state.customRules.map((r) =>
             r.id === id ? { ...r, ...updates } : r
-          ),
-        }));
+          );
+          return {
+            customRules: newRules,
+            sortedEnabledRules: computeSortedEnabledRules(newRules),
+          };
+        });
       },
 
       removeRule: (id) => {
-        set((state) => ({
-          customRules: state.customRules.filter((r) => r.id !== id),
-        }));
+        set((state) => {
+          const newRules = state.customRules.filter((r) => r.id !== id);
+          return {
+            customRules: newRules,
+            sortedEnabledRules: computeSortedEnabledRules(newRules),
+          };
+        });
       },
 
       toggleRuleEnabled: (id) => {
-        set((state) => ({
-          customRules: state.customRules.map((r) =>
+        set((state) => {
+          const newRules = state.customRules.map((r) =>
             r.id === id ? { ...r, enabled: !r.enabled } : r
-          ),
-        }));
+          );
+          return {
+            customRules: newRules,
+            sortedEnabledRules: computeSortedEnabledRules(newRules),
+          };
+        });
       },
 
       reorderRules: (ruleIds) => {
@@ -274,13 +349,19 @@ export const useDownloadsWatcherStore = create<DownloadsWatcherState & Downloads
               return rule ? { ...rule, priority: index + 1 } : null;
             })
             .filter(Boolean) as CustomRenameRule[];
-          return { customRules: reordered };
+          return {
+            customRules: reordered,
+            sortedEnabledRules: computeSortedEnabledRules(reordered),
+          };
         });
       },
 
       setRulesEnabled: (enabled) => set({ rulesEnabled: enabled }),
 
-      resetToDefaultRules: () => set({ customRules: DEFAULT_RULES }),
+      resetToDefaultRules: () => set({
+        customRules: DEFAULT_RULES,
+        sortedEnabledRules: computeSortedEnabledRules(DEFAULT_RULES),
+      }),
 
       // Status actions
       setIsWatching: (watching) => set({ isWatching: watching }),
@@ -301,15 +382,20 @@ export const useDownloadsWatcherStore = create<DownloadsWatcherState & Downloads
         });
       },
 
-      // Undo action
+      // Undo action - O(1) lookups
       undoRename: async (historyId) => {
-        const item = get().history.find((h) => h.id === historyId);
+        const state = get();
+        // O(1) history lookup
+        const index = state.historyIndex.get(historyId);
+        if (index === undefined) return false;
+
+        const item = state.history[index];
         if (!item || !item.canUndo || item.undone) {
           return false;
         }
 
-        // Find the folder to reconstruct full paths
-        const folder = get().watchedFolders.find((f) => f.id === item.folderId);
+        // O(1) folder lookup
+        const folder = state.folderById.get(item.folderId);
         if (!folder) {
           console.error("Cannot undo: watched folder not found");
           return false;
@@ -337,6 +423,7 @@ export const useDownloadsWatcherStore = create<DownloadsWatcherState & Downloads
       name: "sentinel-downloads-watcher",
       partialize: (state) => ({
         // Strip deprecated full path fields from history for privacy
+        // Don't persist indices - they're rebuilt on rehydration
         history: state.history.map((item) => ({
           id: item.id,
           originalName: item.originalName,
@@ -346,13 +433,11 @@ export const useDownloadsWatcherStore = create<DownloadsWatcherState & Downloads
           undone: item.undone,
           folderId: item.folderId,
           folderName: item.folderName,
-          // Don't persist: originalPath, newPath (privacy)
         })),
         maxHistoryItems: state.maxHistoryItems,
-        // Don't persist full folder paths either - store only display info
         watchedFolders: state.watchedFolders.map((f) => ({
           id: f.id,
-          path: f.path, // Still need path for reconstructing undo operations
+          path: f.path,
           name: f.name,
           enabled: f.enabled,
           addedAt: f.addedAt,
@@ -360,22 +445,47 @@ export const useDownloadsWatcherStore = create<DownloadsWatcherState & Downloads
         customRules: state.customRules,
         rulesEnabled: state.rulesEnabled,
       }),
+      // Rebuild O(1) indices after rehydration
+      onRehydrateStorage: () => (state) => {
+        if (state) {
+          // Rebuild history index
+          state.historyIndex = rebuildHistoryIndex(state.history);
+          // Rebuild folder indices
+          const folderIndices = rebuildFolderIndices(state.watchedFolders);
+          state.folderById = folderIndices.folderById;
+          state.folderByPath = folderIndices.folderByPath;
+          // Rebuild sorted rules
+          state.sortedEnabledRules = computeSortedEnabledRules(state.customRules);
+        }
+      },
     }
   )
 );
 
 // ============================================================================
-// Selectors
+// Selectors - Use getState() for non-React contexts (callbacks, effects)
 // ============================================================================
 
+/** Get recent renames (for use outside React components) */
 export const selectRecentRenames = (limit = 10) => {
   const { history } = useDownloadsWatcherStore.getState();
   return history.slice(0, limit);
 };
 
+/** Get undoable renames (for use outside React components) */
 export const selectUndoableRenames = () => {
   const { history } = useDownloadsWatcherStore.getState();
   return history.filter((h) => h.canUndo && !h.undone);
+};
+
+/** Get folder by path - O(1) lookup */
+export const selectFolderByPath = (path: string): WatchedFolder | undefined => {
+  return useDownloadsWatcherStore.getState().folderByPath.get(path);
+};
+
+/** Get folder by ID - O(1) lookup */
+export const selectFolderById = (id: string): WatchedFolder | undefined => {
+  return useDownloadsWatcherStore.getState().folderById.get(id);
 };
 
 /**
@@ -406,21 +516,19 @@ function globToSafeRegex(pattern: string): RegExp | null {
 
 /**
  * Match a filename against rules - returns the first matching rule
+ * Uses pre-sorted rules for O(n) instead of O(n log n) per call
  * SECURITY: Patterns are sanitized to prevent ReDoS attacks
  */
 export const selectRuleByMatch = (filename: string, content?: string) => {
-  const { customRules, rulesEnabled } = useDownloadsWatcherStore.getState();
+  const { sortedEnabledRules, rulesEnabled } = useDownloadsWatcherStore.getState();
 
   if (!rulesEnabled) return null;
 
   // Limit filename length for regex matching
   const safeFilename = filename.slice(0, 500);
 
-  const enabledRules = customRules
-    .filter((r) => r.enabled)
-    .sort((a, b) => a.priority - b.priority);
-
-  for (const rule of enabledRules) {
+  // Use pre-sorted rules - O(n) iteration, no sort needed
+  for (const rule of sortedEnabledRules) {
     switch (rule.matchType) {
       case "extension": {
         const ext = safeFilename.split(".").pop()?.toLowerCase();
@@ -430,7 +538,7 @@ export const selectRuleByMatch = (filename: string, content?: string) => {
         break;
       }
       case "pattern": {
-        const patterns = rule.matchValue.split("|").map((p) => p.trim()).slice(0, 20); // Limit patterns
+        const patterns = rule.matchValue.split("|").map((p) => p.trim()).slice(0, 20);
         for (const pattern of patterns) {
           const regex = globToSafeRegex(pattern);
           if (regex && regex.test(safeFilename)) {
@@ -440,8 +548,6 @@ export const selectRuleByMatch = (filename: string, content?: string) => {
         break;
       }
       case "folder": {
-        // Match against the folder portion of the path if available
-        // For now, just check if the matchValue appears in the filename context
         if (rule.matchValue && safeFilename.toLowerCase().includes(rule.matchValue.toLowerCase())) {
           return rule;
         }
@@ -450,7 +556,6 @@ export const selectRuleByMatch = (filename: string, content?: string) => {
       case "content": {
         if (content) {
           const keywords = rule.matchValue.toLowerCase().split("|").map((k) => k.trim()).slice(0, 20);
-          // Limit content search to first 10KB to prevent DoS
           const safeContent = content.slice(0, 10000).toLowerCase();
           if (keywords.some((k) => k.length > 0 && safeContent.includes(k))) {
             return rule;

@@ -121,6 +121,7 @@ impl CredentialManager {
 
     /// Migrate existing file-based credentials to keychain
     #[cfg(debug_assertions)]
+    #[allow(dead_code)]
     pub fn migrate_to_keychain(provider: &str) -> Result<bool, String> {
         // Check if file-based credential exists
         if let Some(path) = Self::get_fallback_path(provider) {
