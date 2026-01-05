@@ -385,3 +385,42 @@ pub async fn generate_organize_plan_hybrid(
 
     run_v6_hybrid_organization(path, &user_request, all_analyses, emit, Some(progress_emit)).await
 }
+
+/// Simplify folder structure when content is already organized
+///
+/// This command is called when the user accepts the "simplify folder structure"
+/// prompt after a hybrid organization returns 0 content operations.
+///
+/// It focuses on:
+/// - Flattening deeply nested hierarchies (depth > 3)
+/// - Consolidating sparse folders (< 5 files each)
+/// - Shortening verbose path names
+#[tauri::command]
+pub async fn generate_simplification_plan(
+    folder_path: String,
+    app_handle: tauri::AppHandle,
+) -> Result<OrganizePlan, String> {
+    use crate::ai::v2::run_simplification_loop;
+    use tauri::Emitter;
+
+    let path = Path::new(&folder_path);
+    if !path.exists() || !path.is_dir() {
+        return Err(format!("Invalid folder path: {}", folder_path));
+    }
+
+    // Event emitter for AI thoughts
+    let emit = |thought_type: &str, content: &str, expandable_details: Option<Vec<ExpandableDetail>>| {
+        let _ = app_handle.emit(
+            "ai-thought",
+            serde_json::json!({
+                "type": thought_type,
+                "content": content,
+                "expandableDetails": expandable_details,
+            }),
+        );
+    };
+
+    emit("scanning", "Analyzing folder structure for simplification...", None);
+
+    run_simplification_loop(path, emit).await
+}

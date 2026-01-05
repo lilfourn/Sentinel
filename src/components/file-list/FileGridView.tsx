@@ -106,7 +106,6 @@ function FileGridItem({
 
   // Native HTML5 drag start - delegate to parent for full setup
   const handleDragStart = (e: React.DragEvent) => {
-    console.log('[FileGridItem] handleDragStart:', { path: entry.path, isDirectory: entry.isDirectory });
     onDragStart?.(e);
   };
 
@@ -135,7 +134,6 @@ function FileGridItem({
 
   // Native drop
   const handleDrop = (e: React.DragEvent) => {
-    console.log('[FileGridItem] handleDrop:', { path: entry.path, isDirectory: entry.isDirectory });
     if (entry.isDirectory) {
       e.preventDefault();
       e.stopPropagation();
@@ -478,8 +476,6 @@ export function FileGridView({ entries }: FileGridViewProps) {
   // Handle native HTML5 drag start on an item
   const handleDragStart = useCallback(
     (entry: FileEntry, e: React.DragEvent) => {
-      console.log('[FileGridView] handleDragStart:', { path: entry.path, isDirectory: entry.isDirectory });
-
       // Reset drag counter to fix stale state from cancelled/interrupted drags
       dragCounter.current = 0;
 
@@ -558,13 +554,11 @@ export function FileGridView({ entries }: FileGridViewProps) {
   const handleDrop = useCallback(
     async (entry: FileEntry, e: React.DragEvent) => {
       e.preventDefault();
-      console.log('[FileGridView] handleDrop:', { path: entry.path, isDirectory: entry.isDirectory });
       nativeDragDrop();
 
       if (entry.isDirectory) {
         // Pass target path directly to avoid async state timing issues
-        const result = await executeDrop(entry.path);
-        console.log('[FileGridView] executeDrop result:', result);
+        await executeDrop(entry.path);
         setDropTarget(null, false);
       }
     },

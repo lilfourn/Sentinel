@@ -328,8 +328,6 @@ export function FileListView({ entries }: FileListViewProps) {
   // Handle native HTML5 drag start on an item
   const handleDragStart = useCallback(
     (entry: FileEntry, e: React.DragEvent) => {
-      console.log('[FileListView] handleDragStart:', { path: entry.path, isDirectory: entry.isDirectory });
-
       // Reset drag counter to fix stale state from cancelled/interrupted drags
       dragCounter.current = 0;
 
@@ -408,13 +406,11 @@ export function FileListView({ entries }: FileListViewProps) {
   const handleDrop = useCallback(
     async (entry: FileEntry, e: React.DragEvent) => {
       e.preventDefault();
-      console.log('[FileListView] handleDrop:', { path: entry.path, isDirectory: entry.isDirectory });
       nativeDragDrop();
 
       if (entry.isDirectory) {
         // Pass target path directly to avoid async state timing issues
-        const result = await executeDrop(entry.path);
-        console.log('[FileListView] executeDrop result:', result);
+        await executeDrop(entry.path);
         setDropTarget(null, false);
       }
     },

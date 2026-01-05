@@ -45,7 +45,6 @@ export function useDragDrop(options: UseDragDropOptions = {}): UseDragDropReturn
 
   const startDrag = useCallback(
     (items: FileEntry[], sourceDirectory: string) => {
-      console.log('[DragDrop] startDrag:', { items: items.map(i => i.path), sourceDirectory });
       setDragState({
         items,
         sourceDirectory,
@@ -106,29 +105,23 @@ export function useDragDrop(options: UseDragDropOptions = {}): UseDragDropReturn
   );
 
   const executeDrop = useCallback(async (targetPath?: string): Promise<boolean> => {
-    console.log('[DragDrop] executeDrop called:', { targetPath, hasDragState: !!dragState, dropTarget });
-
     if (!dragState) {
-      console.log('[DragDrop] executeDrop: No dragState, returning false');
       return false;
     }
 
     // Use provided targetPath or fall back to dropTarget state
     const finalTarget = targetPath || dropTarget?.path;
     if (!finalTarget) {
-      console.log('[DragDrop] executeDrop: No finalTarget, returning false');
       return false;
     }
 
     // If using state, check validity; if path provided directly, trust caller
     if (!targetPath && !dropTarget?.isValid) {
-      console.log('[DragDrop] executeDrop: Invalid drop target, returning false');
       return false;
     }
 
     const sourcePaths = dragState.items.map((item) => item.path);
     const command = dragState.isCopy ? 'copy_files_batch' : 'move_files_batch';
-    console.log('[DragDrop] executeDrop: Executing', { command, sourcePaths, finalTarget });
 
     try {
       const newPaths = await invoke<string[]>(command, {
@@ -155,7 +148,6 @@ export function useDragDrop(options: UseDragDropOptions = {}): UseDragDropReturn
   }, [dragState, dropTarget, onDropComplete, onDropError]);
 
   const cancelDrag = useCallback(() => {
-    console.log('[DragDrop] cancelDrag called');
     setDragState(null);
     setDropTargetState(null);
     onDragCancel?.();
@@ -181,22 +173,12 @@ export function useDragDrop(options: UseDragDropOptions = {}): UseDragDropReturn
       }
     };
 
-    // Handle losing focus (e.g., switching windows)
-    // DISABLED: This was causing issues with Tauri drag-and-drop
-    // The blur event fires during native drag operations on some systems
-    // const handleBlur = () => {
-    //   console.log('[DragDrop] Window blur detected - cancelling drag');
-    //   cancelDrag();
-    // };
-
     document.addEventListener('keydown', handleKeyDown);
     document.addEventListener('keyup', handleKeyUp);
-    // window.addEventListener('blur', handleBlur);
 
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('keyup', handleKeyUp);
-      // window.removeEventListener('blur', handleBlur);
     };
   }, [dragState, cancelDrag, setCopyMode]);
 

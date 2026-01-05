@@ -2,11 +2,17 @@ use crate::execution::{
     ConflictPolicy, ExecutionConfig, ExecutionEngine, ExecutionResult, ProgressCallback,
     StateSnapshot, StateValidator, ValidationResult,
 };
+use crate::history::{
+    compute_file_checksum, FileChecksum, HistoryOperation, HistorySession, HistoryStore,
+    OperationRecord,
+};
 use crate::jobs::{JobManager, JobStatus, OrganizeJob, OrganizeOperation, OrganizePlan};
 use crate::security::PathValidator;
 use crate::wal::entry::{WALJournal, WALOperationType};
 use crate::wal::journal::WALManager;
-use std::path::PathBuf;
+use chrono::Utc;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
@@ -103,6 +109,7 @@ pub fn set_job_plan(
         description,
         operations: ops,
         target_folder,
+        simplification_recommended: None,
     };
 
     job.set_plan(plan);
@@ -221,6 +228,7 @@ pub async fn execute_plan_parallel(
     conflict_policy: Option<String>,
     original_folder: Option<String>,
     state_snapshot: Option<serde_json::Value>,
+    user_instruction: Option<String>,
 ) -> Result<ExecutionResult, String> {
     // V8: Validate filesystem state if snapshot was provided
     if let Some(snapshot_json) = state_snapshot {
@@ -446,6 +454,26 @@ pub async fn execute_plan_parallel(
                 }
             }
         }
+
+        // V9: Save organization history for multi-level undo
+        if let Err(e) = save_organization_history(
+            &plan,
+            &journal,
+            user_instruction.as_deref().unwrap_or("Organize folder"),
+            result.completed_count,
+        ) {
+            tracing::warn!(
+                error = %e,
+                folder = %plan.target_folder,
+                "Failed to save organization history (undo will not be available)"
+            );
+        } else {
+            tracing::info!(
+                folder = %plan.target_folder,
+                operations = result.completed_count,
+                "Saved organization history for undo"
+            );
+        }
     }
 
     Ok(result)
@@ -527,4 +555,150 @@ fn cleanup_empty_directories(path: &std::path::Path) -> Result<usize, String> {
     }
 
     Ok(deleted_count)
+}
+
+/// Save organization history for multi-level undo.
+///
+/// This creates a history session from the completed execution and saves it
+/// to the history store. The session includes all operations with their
+/// inverse operations and checksums for integrity verification.
+fn save_organization_history(
+    plan: &OrganizePlan,
+    journal: &WALJournal,
+    user_instruction: &str,
+    files_affected: usize,
+) -> Result<(), String> {
+    let store = HistoryStore::new();
+
+    // Build history operations from journal entries
+    let mut history_ops = Vec::new();
+
+    for (i, entry) in journal.entries.iter().enumerate() {
+        // Convert WAL operation to history operation record
+        let operation = wal_to_operation_record(&entry.operation)?;
+        let undo_operation = operation.inverse();
+
+        // Compute checksums for source and result files
+        let (source_checksums, result_checksums) = compute_operation_checksums(&entry.operation);
+
+        history_ops.push(HistoryOperation {
+            id: entry.id.to_string(),
+            sequence: i as u32,
+            operation,
+            undo_operation,
+            source_checksums,
+            result_checksums,
+        });
+    }
+
+    // Create the history session
+    let session = HistorySession {
+        session_id: plan.plan_id.clone(),
+        user_instruction: user_instruction.to_string(),
+        plan_description: plan.description.clone(),
+        executed_at: Utc::now(),
+        target_folder: plan.target_folder.clone(),
+        operations: history_ops,
+        files_affected,
+        undone: false,
+    };
+
+    // Save to history store
+    store.save_session(&plan.target_folder, session)?;
+
+    Ok(())
+}
+
+/// Convert WALOperationType to OperationRecord
+fn wal_to_operation_record(wal_op: &WALOperationType) -> Result<OperationRecord, String> {
+    match wal_op {
+        WALOperationType::CreateFolder { path } => Ok(OperationRecord::CreateFolder {
+            path: path.to_string_lossy().to_string(),
+        }),
+        WALOperationType::Move {
+            source,
+            destination,
+        } => Ok(OperationRecord::Move {
+            source: source.to_string_lossy().to_string(),
+            destination: destination.to_string_lossy().to_string(),
+        }),
+        WALOperationType::Rename { path, new_name } => Ok(OperationRecord::Rename {
+            path: path.to_string_lossy().to_string(),
+            new_name: new_name.clone(),
+        }),
+        WALOperationType::Quarantine {
+            path,
+            quarantine_path,
+        } => Ok(OperationRecord::Quarantine {
+            path: path.to_string_lossy().to_string(),
+            quarantine_path: quarantine_path.to_string_lossy().to_string(),
+        }),
+        WALOperationType::Copy {
+            source,
+            destination,
+        } => Ok(OperationRecord::Copy {
+            source: source.to_string_lossy().to_string(),
+            destination: destination.to_string_lossy().to_string(),
+        }),
+        WALOperationType::DeleteFolder { path } => Ok(OperationRecord::DeleteFolder {
+            path: path.to_string_lossy().to_string(),
+        }),
+    }
+}
+
+/// Compute checksums for source and result files of an operation
+fn compute_operation_checksums(
+    wal_op: &WALOperationType,
+) -> (HashMap<String, FileChecksum>, HashMap<String, FileChecksum>) {
+    let source_checksums = HashMap::new();
+    let mut result_checksums = HashMap::new();
+
+    match wal_op {
+        WALOperationType::Move {
+            source: _,
+            destination,
+        } => {
+            // After move, file is at destination (source no longer exists)
+            if let Ok(checksum) = compute_file_checksum(destination) {
+                result_checksums.insert(destination.to_string_lossy().to_string(), checksum);
+            }
+        }
+        WALOperationType::Rename { path, new_name } => {
+            // After rename, file is at new path
+            let parent = path.parent().unwrap_or(Path::new(""));
+            let new_path = parent.join(new_name);
+            if let Ok(checksum) = compute_file_checksum(&new_path) {
+                result_checksums.insert(new_path.to_string_lossy().to_string(), checksum);
+            }
+        }
+        WALOperationType::CreateFolder { path } => {
+            // Folder now exists at path
+            if let Ok(checksum) = compute_file_checksum(path) {
+                result_checksums.insert(path.to_string_lossy().to_string(), checksum);
+            }
+        }
+        WALOperationType::Copy {
+            source: _,
+            destination,
+        } => {
+            // Copy creates file at destination
+            if let Ok(checksum) = compute_file_checksum(destination) {
+                result_checksums.insert(destination.to_string_lossy().to_string(), checksum);
+            }
+        }
+        WALOperationType::Quarantine {
+            path: _,
+            quarantine_path,
+        } => {
+            // File is now at quarantine path
+            if let Ok(checksum) = compute_file_checksum(quarantine_path) {
+                result_checksums.insert(quarantine_path.to_string_lossy().to_string(), checksum);
+            }
+        }
+        WALOperationType::DeleteFolder { path: _ } => {
+            // Nothing to checksum - folder is deleted
+        }
+    }
+
+    (source_checksums, result_checksums)
 }

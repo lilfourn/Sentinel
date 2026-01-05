@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { ChevronLeft, ChevronRight, X, Info, Loader2 } from 'lucide-react';
 import type { PhotoEntry } from '../../types/photo';
-import { cn } from '../../lib/utils';
+import { cn, formatFileSize, formatAbsoluteDate } from '../../lib/utils';
 
 interface LightboxProps {
   photos: PhotoEntry[];
@@ -10,23 +10,6 @@ interface LightboxProps {
   onClose: () => void;
   onNext: () => void;
   onPrev: () => void;
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function formatDate(timestamp: number | null): string {
-  if (!timestamp) return 'Unknown';
-  return new Date(timestamp).toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
 }
 
 export function Lightbox({ photos, currentIndex, onClose, onNext, onPrev }: LightboxProps) {
@@ -166,7 +149,7 @@ export function Lightbox({ photos, currentIndex, onClose, onNext, onPrev }: Ligh
           <div className="grid grid-cols-2 gap-4">
             <div>
               <p className="text-xs text-white/40 uppercase tracking-wider mb-1">Date</p>
-              <p className="text-sm">{formatDate(currentPhoto.createdAt || currentPhoto.modifiedAt)}</p>
+              <p className="text-sm">{formatAbsoluteDate(currentPhoto.createdAt || currentPhoto.modifiedAt)}</p>
             </div>
             <div>
               <p className="text-xs text-white/40 uppercase tracking-wider mb-1">Size</p>

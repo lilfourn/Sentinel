@@ -690,6 +690,7 @@ where
                         .collect(),
                     // organization_root is the target folder - all organization stays within it
                     target_folder: vfs.organization_root().to_string_lossy().to_string(),
+                    simplification_recommended: None,
                 };
                 return Ok(plan);
             }
@@ -984,6 +985,7 @@ where
                 .collect(),
             // organization_root is the target folder - all organization stays within it
             target_folder: vfs.organization_root().to_string_lossy().to_string(),
+            simplification_recommended: None,
         };
 
         event_emitter("committing", &format!("Plan ready: {} operations", plan.operations.len()), Some(vec![
@@ -1347,6 +1349,7 @@ where
                 .collect(),
             // organization_root is the target folder - all organization stays within it
             target_folder: vfs.organization_root().to_string_lossy().to_string(),
+            simplification_recommended: None,
         };
 
         event_emitter(
@@ -1737,6 +1740,7 @@ where
                 })
                 .collect(),
             target_folder: vfs.organization_root().to_string_lossy().to_string(),
+            simplification_recommended: None,
         };
 
         event_emitter(
@@ -1757,12 +1761,300 @@ where
         return Ok(plan);
     }
 
-    // No operations created
-    Err(format!(
-        "V6 Hybrid completed but created no operations for {} files. \
-         The folder may already be well-organized.",
-        file_count
-    ))
+    // No operations created - check if simplification might help
+    let files = vfs.files();
+    let dir_count = files.iter().filter(|f| f.is_directory).count();
+    let actual_file_count = files.iter().filter(|f| !f.is_directory).count();
+
+    // Compute max depth from file paths
+    let root_depth = target_folder.components().count();
+    let max_depth = files
+        .iter()
+        .filter(|f| !f.is_directory)
+        .map(|f| {
+            let path = std::path::Path::new(&f.path);
+            path.components().count().saturating_sub(root_depth)
+        })
+        .max()
+        .unwrap_or(0);
+
+    // Recommend simplification if:
+    // - Folder depth > 3 levels, OR
+    // - Too many directories relative to files (sparse structure, < 5 files per folder avg)
+    // Note: Use multiplication to avoid integer division truncation issues
+    const MIN_FILES_PER_FOLDER: usize = 5;
+    let simplification_recommended = max_depth > 3
+        || (dir_count > 0 && actual_file_count > 0 && actual_file_count < dir_count * MIN_FILES_PER_FOLDER);
+
+    let description = if simplification_recommended {
+        format!(
+            "No content organization needed for {} files. Folder structure could be simplified (depth: {}, {} directories).",
+            file_count, max_depth, dir_count
+        )
+    } else {
+        format!(
+            "Folder is already well-organized ({} files).",
+            file_count
+        )
+    };
+
+    Ok(OrganizePlan {
+        plan_id: format!("no-ops-{}", chrono::Utc::now().timestamp_millis()),
+        description,
+        operations: vec![],
+        target_folder: vfs.organization_root().to_string_lossy().to_string(),
+        simplification_recommended: Some(simplification_recommended),
+    })
+}
+
+// ============================================================================
+// Folder Simplification Mode
+// ============================================================================
+
+/// Run folder structure simplification
+///
+/// This is called when content is already organized but folder structure
+/// could be improved (deeply nested, sparse folders, etc.)
+pub async fn run_simplification_loop<F>(
+    target_folder: &Path,
+    event_emitter: F,
+) -> Result<OrganizePlan, String>
+where
+    F: Fn(&str, &str, Option<Vec<ExpandableDetail>>),
+{
+    use super::prompts::SIMPLIFICATION_SYSTEM_PROMPT;
+
+    // Build VFS
+    event_emitter("indexing", "Scanning folder structure...", None);
+    let mut vfs = ShadowVFS::new(target_folder).map_err(|e| {
+        format!("Failed to scan folder: {}", e)
+    })?;
+
+    // Gather structure info for the prompt
+    let files = vfs.files();
+    let dir_count = files.iter().filter(|f| f.is_directory).count();
+    let file_count = files.iter().filter(|f| !f.is_directory).count();
+
+    // Build structure analysis for prompt
+    let root_str = target_folder.to_string_lossy();
+    let structure_sample: Vec<String> = files
+        .iter()
+        .take(100)
+        .map(|f| f.path.replace(&*root_str, ""))
+        .collect();
+
+    let context = format!(
+        r#"# Folder Structure Simplification
+
+## Target Folder
+{}
+
+## Statistics
+- Files: {}
+- Directories: {}
+
+## Sample Paths (first 100)
+{}
+
+## User Goal
+Simplify this folder structure by flattening deep nesting and consolidating sparse folders.
+"#,
+        target_folder.display(),
+        file_count,
+        dir_count,
+        structure_sample.join("\n")
+    );
+
+    event_emitter("thinking", "Analyzing structure for simplification...", Some(vec![
+        ExpandableDetail { label: "Files".to_string(), value: file_count.to_string() },
+        ExpandableDetail { label: "Directories".to_string(), value: dir_count.to_string() },
+    ]));
+
+    // Get API key
+    let api_key = crate::ai::CredentialManager::get_api_key("anthropic")
+        .map_err(|_| "Anthropic API key not configured".to_string())?;
+
+    // Initialize client
+    let client = Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let rate_limiter = RateLimitManager::new();
+    let tools = get_v2_organize_tools();
+
+    // Build messages
+    let mut messages = vec![ToolMessage {
+        role: "user".to_string(),
+        content: vec![ToolMessageContent::text(&context)],
+    }];
+
+    // Agent loop (max 5 iterations for simplification)
+    for iteration in 0..5 {
+        if iteration > 0 {
+            let delay = rate_limiter.get_delay();
+            tokio::time::sleep(delay).await;
+        }
+
+        event_emitter("planning", &format!("Simplification iteration {}", iteration + 1), None);
+
+        // Build request
+        let request = ToolApiRequest {
+            model: ClaudeModel::Sonnet.as_str().to_string(),
+            max_tokens: MAX_TOKENS,
+            system: SIMPLIFICATION_SYSTEM_PROMPT.to_string(),
+            messages: messages.clone(),
+            tools: Some(tools.clone()),
+        };
+
+        // Send request
+        let response = client
+            .post(ANTHROPIC_API_URL)
+            .header("x-api-key", &api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("content-type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(format!("API error: {}", error_text));
+        }
+
+        let api_response: ToolApiResponse = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+        // Collect assistant content for the conversation
+        let mut assistant_content = Vec::new();
+        // Collect tool results to feed back to the model
+        let mut tool_results: Vec<ToolMessageContent> = Vec::new();
+
+        // Process tool calls
+        for block in &api_response.content {
+            if let ContentBlockResponse::ToolUse { id, name, input } = block {
+                eprintln!("[SimplifyLoop] Tool use: {}", name);
+
+                // Emit event for UI
+                match name.as_str() {
+                    "apply_organization_rules" => {
+                        let rules = input.get("rules").and_then(|v| v.as_array());
+                        let count = rules.map(|a| a.len()).unwrap_or(0);
+                        event_emitter(
+                            "applying_rules",
+                            &format!("Applying {} simplification rules", count),
+                            Some(vec![ExpandableDetail {
+                                label: "Rules".to_string(),
+                                value: count.to_string(),
+                            }]),
+                        );
+                    }
+                    "commit_plan" => {
+                        event_emitter("committing", "Finalizing simplification plan...", None);
+                    }
+                    _ => {}
+                }
+
+                // Execute tool
+                let result = execute_v2_tool(name, input, &mut vfs);
+
+                match result {
+                    V2ToolResult::Commit(plan) => {
+                        eprintln!(
+                            "[SimplifyLoop] Plan committed: {} operations",
+                            plan.operations.len()
+                        );
+                        event_emitter(
+                            "committing",
+                            &format!("Simplification plan: {} operations", plan.operations.len()),
+                            None,
+                        );
+                        return Ok(plan);
+                    }
+                    V2ToolResult::Continue(output) => {
+                        // Add tool result to feed back to the model
+                        tool_results.push(ToolMessageContent::tool_result(id, &output, false));
+                    }
+                    V2ToolResult::Error(err) => {
+                        eprintln!("[SimplifyLoop] Tool error: {}", err);
+                        event_emitter("error", &format!("Tool error: {}", err), None);
+                        // Still add the error as a tool result so the model knows what happened
+                        tool_results.push(ToolMessageContent::tool_result(id, &format!("Error: {}", err), true));
+                    }
+                }
+            }
+        }
+
+        // Add assistant response
+        for block in api_response.content.iter() {
+            match block {
+                ContentBlockResponse::Text { text } => {
+                    assistant_content.push(ToolMessageContent::text(text));
+                }
+                ContentBlockResponse::ToolUse { id, name, input } => {
+                    assistant_content.push(ToolMessageContent::tool_use(id, name, input));
+                }
+            }
+        }
+
+        messages.push(ToolMessage {
+            role: "assistant".to_string(),
+            content: assistant_content,
+        });
+
+        // Add tool results as user message so the model can see them
+        if !tool_results.is_empty() {
+            messages.push(ToolMessage {
+                role: "user".to_string(),
+                content: tool_results,
+            });
+        }
+
+        // Check if we should end
+        if api_response.stop_reason == "end_turn" {
+            break;
+        }
+    }
+
+    // If we have operations, commit them
+    if !vfs.operations().is_empty() {
+        let plan = OrganizePlan {
+            plan_id: format!("simplify-{}", chrono::Utc::now().timestamp_millis()),
+            description: format!(
+                "Folder structure simplification: {} operations",
+                vfs.operations().len()
+            ),
+            operations: vfs
+                .operations()
+                .iter()
+                .map(|op| crate::jobs::OrganizeOperation {
+                    op_id: op.op_id.clone(),
+                    op_type: op.op_type.to_string(),
+                    source: op.source.clone(),
+                    destination: op.destination.clone(),
+                    path: op.path.clone(),
+                    new_name: op.new_name.clone(),
+                })
+                .collect(),
+            target_folder: vfs.organization_root().to_string_lossy().to_string(),
+            simplification_recommended: None,
+        };
+
+        event_emitter("committing", &format!("Plan ready: {} operations", plan.operations.len()), None);
+        return Ok(plan);
+    }
+
+    // No simplification needed
+    Ok(OrganizePlan {
+        plan_id: format!("no-simplify-{}", chrono::Utc::now().timestamp_millis()),
+        description: "Folder structure is already optimal.".to_string(),
+        operations: vec![],
+        target_folder: vfs.organization_root().to_string_lossy().to_string(),
+        simplification_recommended: None,
+    })
 }
 
 #[cfg(test)]

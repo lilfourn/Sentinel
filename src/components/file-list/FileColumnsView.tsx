@@ -218,8 +218,6 @@ export function FileColumnsView({ entries }: FileColumnsViewProps) {
   // Handle native HTML5 drag start on an item
   const handleDragStart = useCallback(
     (entry: FileEntry, e: React.DragEvent) => {
-      console.log('[FileColumnsView] handleDragStart:', { path: entry.path, isDirectory: entry.isDirectory });
-
       // Reset drag counter to fix stale state from cancelled/interrupted drags
       dragCounter.current = 0;
 
@@ -298,13 +296,11 @@ export function FileColumnsView({ entries }: FileColumnsViewProps) {
   const handleDrop = useCallback(
     async (entry: FileEntry, e: React.DragEvent) => {
       e.preventDefault();
-      console.log('[FileColumnsView] handleDrop:', { path: entry.path, isDirectory: entry.isDirectory });
       nativeDragDrop();
 
       if (entry.isDirectory) {
         // Pass target path directly to avoid async state timing issues
-        const result = await executeDrop(entry.path);
-        console.log('[FileColumnsView] executeDrop result:', result);
+        await executeDrop(entry.path);
         setDropTarget(null, false);
       }
     },

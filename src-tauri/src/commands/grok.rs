@@ -344,6 +344,7 @@ fn convert_to_frontend_plan(plan: OrganizationPlan, target_folder: &str) -> Orga
         ),
         operations,
         target_folder: target_folder.to_string(),
+        simplification_recommended: None,
     }
 }
 

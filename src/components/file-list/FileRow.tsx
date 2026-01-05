@@ -17,8 +17,6 @@ import type { FileEntry } from '../../types/file';
 import type { GhostState } from '../../types/ghost';
 import '../ghost/GhostAnimations.css';
 
-// Throttle logging for dragOver (fires continuously)
-let lastDragOverLog = 0;
 
 interface FileRowProps {
   entry: FileEntry;
@@ -95,14 +93,11 @@ export function FileRow({
 
   // Native HTML5 drag start - delegate to parent for full setup
   const handleDragStart = (e: React.DragEvent) => {
-    console.log('[FileRow] handleDragStart:', { path: entry.path, isDirectory: entry.isDirectory });
-    // Parent will set up ghost image, data transfer, etc.
     onDragStart?.(e);
   };
 
   // Native drag enter - only trigger for directories (drop targets)
   const handleDragEnter = (e: React.DragEvent) => {
-    console.log('[FileRow] handleDragEnter:', { path: entry.path, isDirectory: entry.isDirectory });
     if (entry.isDirectory) {
       onDragEnter?.(e);
     }
@@ -110,12 +105,6 @@ export function FileRow({
 
   // Native drag over - must prevent default to allow drop
   const handleDragOver = (e: React.DragEvent) => {
-    // Only log once every 500ms to avoid flooding console
-    const now = Date.now();
-    if (entry.isDirectory && (!lastDragOverLog || now - lastDragOverLog > 500)) {
-      console.log('[FileRow] handleDragOver:', { path: entry.path, isDirectory: entry.isDirectory });
-      lastDragOverLog = now;
-    }
     if (entry.isDirectory) {
       e.preventDefault();
       e.stopPropagation();
@@ -132,7 +121,6 @@ export function FileRow({
 
   // Native drop
   const handleDrop = (e: React.DragEvent) => {
-    console.log('[FileRow] handleDrop:', { path: entry.path, isDirectory: entry.isDirectory });
     if (entry.isDirectory) {
       e.preventDefault();
       e.stopPropagation();

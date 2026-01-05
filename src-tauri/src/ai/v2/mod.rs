@@ -24,7 +24,7 @@ pub mod architect;
 pub mod builder;
 pub mod compression;
 mod local_vector_index;
-mod prompts;
+pub mod prompts;
 mod rate_limiter;
 mod sampling;
 mod tools;
@@ -33,7 +33,7 @@ mod vfs;
 pub mod agent_loop;
 
 // Public exports
-pub use agent_loop::{run_v6_hybrid_organization, ExpandableDetail, ProgressEvent};
+pub use agent_loop::{run_v6_hybrid_organization, run_simplification_loop, ExpandableDetail, ProgressEvent};
 #[allow(unused_imports)]
 pub use analytics::{ContentPreview, DigestGenerator, FolderDigest, SemanticTag};
 #[allow(unused_imports)]

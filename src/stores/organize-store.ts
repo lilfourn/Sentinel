@@ -61,6 +61,7 @@ export interface OrganizePlan {
   description: string;
   operations: OrganizeOperation[];
   targetFolder: string;
+  simplificationRecommended?: boolean;
 }
 
 // Thought/step types for the AI thinking stream
@@ -171,6 +172,9 @@ interface OrganizeState {
   lastCompletedAt: number | null;
   completedTargetFolder: string | null;
 
+  // Simplification prompt state
+  awaitingSimplificationChoice: boolean;
+
   // Detailed execution errors for error dialog display
   executionErrors: ExecutionError[];
 
@@ -243,6 +247,10 @@ interface OrganizeActions {
   toggleOperationGroup: (targetFolder: string) => void;
   updateOperationDestination: (opId: string, newDestination: string) => void;
   updateOperationNewName: (opId: string, newName: string) => void;
+
+  // Simplification prompt actions
+  acceptSimplification: () => Promise<void>;
+  rejectSimplification: () => void;
 }
 
 let thoughtId = 0;
@@ -336,6 +344,7 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
   lastCompletedAt: null,
   completedTargetFolder: null,
   executionErrors: [],
+  awaitingSimplificationChoice: false,
 
   // Plan edit modal state
   isPlanEditModalOpen: false,
@@ -649,6 +658,19 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
 
       // Handle "already organized" case (0 operations)
       if (plan.operations.length === 0) {
+        // Check if simplification might help
+        if (plan.simplificationRecommended === true) {
+          get().addThought('planning', 'No content changes needed', 'Would you like to simplify the folder structure?');
+          set({
+            currentPlan: plan,
+            isAnalyzing: false,
+            awaitingSimplificationChoice: true,
+            phase: 'idle',
+          });
+          return;
+        }
+
+        // Truly organized
         get().addThought('complete', 'Folder is already well organized!', plan.description || 'No changes needed');
         set({
           currentPlan: plan,
@@ -912,10 +934,12 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
 
       // Execute using parallel DAG executor with auto-rename conflict policy
       // Pass originalFolder for post-execution cleanup of empty directories
+      // Pass userInstruction for history tracking (multi-level undo)
       const result = await invoke<ExecutionResult>('execute_plan_parallel', {
         plan: backendPlan,
         conflictPolicy: 'auto_rename', // Auto-rename duplicates like file_1.pdf, file_2.pdf
         originalFolder: get().targetFolder, // Original folder for empty directory cleanup
+        userInstruction: get().userInstruction || undefined, // For history tracking
       });
 
       // Clean up listeners and flush any pending refreshes
@@ -1239,6 +1263,90 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
         op.opId === opId ? { ...op, newName, isModified: true } : op
       ),
     }));
+  },
+
+  // Simplification prompt actions
+  acceptSimplification: async () => {
+    const { targetFolder, isAnalyzing, awaitingSimplificationChoice } = get();
+
+    // Guard against double-invocation (e.g., rapid double-click)
+    if (!targetFolder || isAnalyzing || !awaitingSimplificationChoice) return;
+
+    set({ awaitingSimplificationChoice: false, isAnalyzing: true, phase: 'planning' });
+    get().addThought('analyzing', 'Analyzing folder structure for simplification...');
+
+    try {
+      // Set up event listeners for AI thoughts
+      const unlistenThought = await listen<{
+        type: string;
+        content: string;
+        expandableDetails?: Array<{ label: string; value: string }>;
+      }>('ai-thought', (event) => {
+        const { type, content, expandableDetails } = event.payload;
+        get().addThought(
+          type as ThoughtType,
+          content,
+          undefined,
+          expandableDetails
+        );
+      });
+      activeAnalysisListeners.unlistenThought = unlistenThought;
+
+      const rawPlan = await invoke<OrganizePlan>('generate_simplification_plan', {
+        folderPath: targetFolder,
+      });
+
+      // Clean up listeners
+      cleanupAnalysisListeners();
+
+      if (!rawPlan?.operations) {
+        throw new Error('No plan returned from simplification analysis');
+      }
+
+      const plan = addRiskLevels(rawPlan);
+
+      if (plan.operations.length === 0) {
+        get().addThought('complete', 'Folder structure is already simple!');
+        set({
+          currentPlan: plan,
+          isAnalyzing: false,
+          phase: 'complete',
+        });
+        return;
+      }
+
+      get().addThought('planning', `Simplification plan ready: ${plan.operations.length} operations`, plan.description);
+
+      set({
+        currentPlan: plan,
+        isAnalyzing: false,
+        phase: 'simulation',
+      });
+    } catch (error) {
+      cleanupAnalysisListeners();
+      get().addThought('error', 'Simplification failed', String(error));
+      set({
+        isAnalyzing: false,
+        analysisError: String(error),
+        awaitingSimplificationChoice: false, // Reset to prevent UI stuck state
+        phase: 'failed',
+      });
+    }
+  },
+
+  rejectSimplification: () => {
+    get().addThought('complete', 'Folder is already well organized!');
+    set({
+      awaitingSimplificationChoice: false,
+      phase: 'complete',
+    });
+
+    // Mark job as complete
+    const jobId = get().currentJobId;
+    if (jobId && !jobId.startsWith('local-')) {
+      invoke('complete_organize_job', { jobId }).catch(console.error);
+      setTimeout(() => invoke('clear_organize_job').catch(console.error), 1000);
+    }
   },
 }));
 

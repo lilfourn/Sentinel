@@ -75,6 +75,7 @@ duct = "0.13"
 image = "0.25"
 base64 = "0.22"
 sha2 = "0.10"
+hex = "0.4"
 
 # SVG rendering
 resvg = "0.44"

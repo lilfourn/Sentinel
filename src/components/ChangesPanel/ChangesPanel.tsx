@@ -22,6 +22,7 @@ import {
 } from '../../stores/organize-store';
 import { ErrorDetailDialog } from './ErrorDetailDialog';
 import { OrganizeMethodSelector } from './OrganizeMethodSelector';
+import { SimplificationPrompt } from './SimplificationPrompt';
 import { DynamicStatus } from './DynamicStatus';
 import { SimulationControls } from './SimulationControls';
 import { ExecutionProgress } from './ExecutionProgress';
@@ -43,6 +44,9 @@ export function ChangesPanel() {
     setUserInstruction,
     submitInstruction,
     awaitingInstruction,
+    awaitingSimplificationChoice,
+    acceptSimplification,
+    rejectSimplification,
     phase,
     analysisError,
     latestEvent,
@@ -134,6 +138,16 @@ export function ChangesPanel() {
               }}
               isDisabled={isAnalyzing}
               folderName={folderName}
+            />
+          )}
+
+          {/* Simplification Prompt - shown when 0 operations but simplification might help */}
+          {awaitingSimplificationChoice && (
+            <SimplificationPrompt
+              onAccept={acceptSimplification}
+              onReject={rejectSimplification}
+              folderName={folderName}
+              isLoading={isAnalyzing}
             />
           )}
 

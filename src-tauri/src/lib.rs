@@ -3,6 +3,7 @@ mod billing;
 mod commands;
 mod execution;
 mod file_coordination;
+mod history;
 mod jobs;
 mod models;
 pub mod quarantine;
@@ -97,6 +98,7 @@ pub fn run() {
             apply_rename,
             undo_rename,
             generate_organize_plan_hybrid,
+            generate_simplification_plan,
             // Job persistence commands
             start_organize_job,
             set_job_plan,
@@ -204,6 +206,15 @@ pub fn run() {
             can_use_extended_thinking,
             check_token_quota,
             get_monthly_tokens,
+            // History commands (multi-level undo)
+            history_has_history,
+            history_get_summary,
+            history_get_sessions,
+            history_get_session_detail,
+            history_undo_preflight,
+            history_undo_execute,
+            history_delete,
+            history_list_folders,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

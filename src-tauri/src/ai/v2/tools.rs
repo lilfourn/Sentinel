@@ -415,6 +415,7 @@ fn execute_commit(input: &serde_json::Value, vfs: &ShadowVFS) -> V2ToolResult {
             description: description.to_string(),
             operations: Vec::new(),
             target_folder: vfs.root().to_string_lossy().to_string(),
+            simplification_recommended: None,
         });
     }
 
@@ -436,6 +437,7 @@ fn execute_commit(input: &serde_json::Value, vfs: &ShadowVFS) -> V2ToolResult {
         description: description.to_string(),
         operations: organize_ops,
         target_folder: vfs.root().to_string_lossy().to_string(),
+        simplification_recommended: None,
     };
 
     if dry_run {

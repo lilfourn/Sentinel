@@ -37,6 +37,9 @@ pub struct OrganizePlan {
     pub description: String,
     pub operations: Vec<OrganizeOperation>,
     pub target_folder: String,
+    /// Whether folder structure simplification is recommended (set when 0 operations)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub simplification_recommended: Option<bool>,
 }
 
 /// Persistent state for an organize job
