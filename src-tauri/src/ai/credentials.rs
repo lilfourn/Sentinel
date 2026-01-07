@@ -1,5 +1,7 @@
 use keyring::Entry;
+#[cfg(debug_assertions)]
 use std::fs;
+#[cfg(debug_assertions)]
 use std::path::PathBuf;
 
 const SERVICE_NAME: &str = "com.sentinel.filemanager";
@@ -28,9 +30,9 @@ impl CredentialManager {
                     return Ok(());
                 }
             }
-            Err(e) => {
+            Err(_e) => {
                 #[cfg(debug_assertions)]
-                eprintln!("[Credentials] Keychain unavailable: {}", e);
+                eprintln!("[Credentials] Keychain unavailable: {}", _e);
             }
         }
 

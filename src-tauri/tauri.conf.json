@@ -57,7 +57,7 @@
     },
     "updater": {
       "endpoints": [
-        "https://github.com/lukefournier/sentinel/releases/latest/download/latest.json"
+        "https://github.com/lilfourn/Sentinal/releases/latest/download/latest.json"
       ],
       "pubkey": "RWR2kmM0j3kdEE40qVMpjo4M4m05VaGVzKfJEjgsRbz/f5BI91WLHkVt"
     }
