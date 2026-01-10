@@ -48,7 +48,8 @@ pub fn run() {
         .unwrap_or_else(|e| {
             tracing::error!("Failed to create quarantine manager: {}. Using fallback.", e);
             // Create a fallback quarantine manager with temp directory
-            use std::sync::{Arc, RwLock};
+            use std::sync::Arc;
+            use tokio::sync::RwLock;
             use quarantine::QuarantineManager;
             Arc::new(RwLock::new(QuarantineManager::with_config(
                 std::env::temp_dir().join("sentinel-quarantine"),
