@@ -45,7 +45,16 @@ pub fn run() {
     let tree_state = TreeState::default();
     let vfs_state = create_vfs_state();
     let quarantine_state = create_quarantine_state()
-        .expect("Failed to create quarantine manager");
+        .unwrap_or_else(|e| {
+            tracing::error!("Failed to create quarantine manager: {}. Using fallback.", e);
+            // Create a fallback quarantine manager with temp directory
+            use std::sync::{Arc, RwLock};
+            use quarantine::QuarantineManager;
+            Arc::new(RwLock::new(QuarantineManager::with_config(
+                std::env::temp_dir().join("sentinel-quarantine"),
+                30
+            )))
+        });
     let chat_abort_flag = ChatAbortFlag::default();
     let grok_state = GrokState::default();
     let grok_abort_flag = GrokAbortFlag::default();
