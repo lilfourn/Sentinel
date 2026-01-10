@@ -271,10 +271,10 @@ function AutoRenameSentinelSection({
         Automatically rename new files using AI when they appear in watched folders
       </p>
 
-      {/* Warning if no API key */}
+      {/* Warning if AI service unavailable */}
       {!anthropicConfigured && (
         <p className="text-xs text-amber-600 dark:text-amber-400 p-2 bg-amber-50 dark:bg-amber-900/20 rounded">
-          Configure your Anthropic API key in the API section to enable auto-rename
+          AI service temporarily unavailable. Please try again later or contact support.
         </p>
       )}
 

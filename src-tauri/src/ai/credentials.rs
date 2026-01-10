@@ -64,9 +64,32 @@ impl CredentialManager {
         Err("Could not determine config directory".to_string())
     }
 
-    /// Get an API key from Keychain (with file fallback in dev mode)
+    /// Get an API key - uses compile-time embedded key for Anthropic, Keychain for others
     pub fn get_api_key(provider: &str) -> Result<String, String> {
-        // Try keychain first
+        // For Anthropic/Claude: use the app-provided key embedded at compile time
+        if provider == "anthropic" {
+            // First check compile-time embedded key (for production builds)
+            if let Some(key) = option_env!("CLAUDE_API_KEY") {
+                if !key.is_empty() {
+                    #[cfg(debug_assertions)]
+                    eprintln!("[Credentials] Using compile-time embedded CLAUDE_API_KEY");
+                    return Ok(key.to_string());
+                }
+            }
+
+            // Then check runtime env var (for development)
+            if let Ok(key) = std::env::var("CLAUDE_API_KEY") {
+                if !key.is_empty() {
+                    #[cfg(debug_assertions)]
+                    eprintln!("[Credentials] Using runtime CLAUDE_API_KEY env var");
+                    return Ok(key);
+                }
+            }
+
+            return Err("CLAUDE_API_KEY not configured. Please contact support.".to_string());
+        }
+
+        // For other providers: use Keychain
         if let Ok(entry) = Entry::new(SERVICE_NAME, provider) {
             if let Ok(password) = entry.get_password() {
                 #[cfg(debug_assertions)]
