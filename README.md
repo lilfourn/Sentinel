@@ -46,7 +46,7 @@
 
 My father has been accumulating digital files for over 20 years—thousands of photos, documents, receipts, and project files scattered across dozens of folders with names like "New Folder (47)" and "Misc Stuff 2019". Every time he needed to find something, it turned into a multi-hour archaeology expedition.
 
-I'm a Computer Science student at **The University of Texas at Austin**, and I thought: *what if AI could actually understand what files are about—not just their names, but their contents—and organize them intelligently?*
+I'm an Economics and Computer Science student at **The University of Texas at Austin**, and I thought: *what if AI could actually understand what files are about—not just their names, but their contents—and organize them intelligently?*
 
 So I built Sentinel. Now my Dad can point it at any messy folder, describe in plain English how he wants things organized, and watch as it builds a complete reorganization plan. He previews every change before anything moves. No more lost files. No more digital chaos.
 
