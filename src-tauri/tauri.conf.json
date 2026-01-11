@@ -26,7 +26,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' http://localhost:* 'unsafe-inline' 'unsafe-eval'; script-src 'self' http://localhost:* 'unsafe-inline' 'unsafe-eval' https://clerk.app-sentinel.dev https://*.clerk.dev https://*.clerk.accounts.dev blob:; style-src 'self' http://localhost:* 'unsafe-inline'; worker-src 'self' blob:; connect-src 'self' http://localhost:* ipc: ipc://localhost tauri: https://*.convex.cloud https://api.anthropic.com https://api.stripe.com https://*.clerk.dev https://*.clerk.accounts.dev https://clerk.app-sentinel.dev wss://*.convex.cloud https://github.com https://api.github.com https://raw.githubusercontent.com; img-src 'self' http://localhost:* data: https: blob:; font-src 'self' http://localhost:* data:; frame-src 'self' http://localhost:* https://*.clerk.dev https://*.clerk.accounts.dev https://clerk.app-sentinel.dev"
+      "csp": "default-src 'self'; script-src 'self' https://clerk.app-sentinel.dev https://*.clerk.dev https://*.clerk.accounts.dev 'unsafe-inline'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; connect-src 'self' ipc: ipc://localhost tauri: https://*.convex.cloud https://api.anthropic.com https://api.stripe.com https://*.clerk.dev https://*.clerk.accounts.dev https://clerk.app-sentinel.dev wss://*.convex.cloud https://github.com https://api.github.com https://raw.githubusercontent.com; img-src 'self' data: https: blob:; font-src 'self' data:; frame-src 'self' https://*.clerk.dev https://*.clerk.accounts.dev https://clerk.app-sentinel.dev"
     }
   },
   "bundle": {
@@ -42,7 +42,19 @@
     ],
     "macOS": {
       "entitlements": "Entitlements.plist",
-      "minimumSystemVersion": "10.15"
+      "minimumSystemVersion": "10.15",
+      "dmg": {
+        "background": "installer-assets/dmg-background.png",
+        "windowSize": { "width": 660, "height": 400 },
+        "appPosition": { "x": 180, "y": 190 },
+        "applicationFolderPosition": { "x": 480, "y": 190 }
+      }
+    },
+    "windows": {
+      "nsis": {
+        "headerImage": "installer-assets/nsis-header.bmp",
+        "sidebarImage": "installer-assets/nsis-sidebar.bmp"
+      }
     }
   },
   "plugins": {

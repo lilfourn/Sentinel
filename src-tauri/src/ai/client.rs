@@ -1,11 +1,29 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use tracing::error;
 
 use super::credentials::CredentialManager;
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+/// Sanitize API errors to prevent leaking internal details to users
+/// Logs full error details internally, returns user-friendly message
+fn sanitize_api_error(status: u16, error_text: &str) -> String {
+    // Log full details for debugging
+    error!(status, error = %error_text, "API error occurred");
+
+    // Return user-friendly message based on status code
+    match status {
+        400 => "Invalid request. Please try again with different input.".into(),
+        401 => "Authentication failed. Please check your API key in Settings.".into(),
+        403 => "Access denied. Your API key may not have permission for this operation.".into(),
+        429 => "Rate limit exceeded. Please wait a moment before trying again.".into(),
+        500..=599 => "The AI service is temporarily unavailable. Please try again later.".into(),
+        _ => "An error occurred while processing your request. Please try again.".into(),
+    }
+}
 
 /// Claude model identifiers
 pub enum ClaudeModel {
@@ -167,10 +185,8 @@ impl AnthropicClient {
 
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            if let Ok(api_error) = serde_json::from_str::<ApiError>(&error_text) {
-                return Err(format!("API error: {}", api_error.error.message));
-            }
-            return Err(format!("API error ({}): {}", status, error_text));
+            // Log full error for debugging, return sanitized message to user
+            return Err(sanitize_api_error(status.as_u16(), &error_text));
         }
 
         let api_response: ApiResponse = response

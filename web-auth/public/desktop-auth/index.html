@@ -131,40 +131,90 @@
       font-weight: 500;
     }
 
-    /* Success message */
-    .success-message {
-      background: rgba(34, 197, 94, 0.1);
-      border: 1px solid rgba(34, 197, 94, 0.2);
-      border-radius: 0.75rem;
-      padding: 1.5rem;
+    /* Success page - Full screen layout matching landing page */
+    .success-page {
+      position: fixed;
+      inset: 0;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f0f23 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
       text-align: center;
+      padding: 2rem;
+      z-index: 100;
     }
 
-    .success-message h2 {
-      color: #22c55e;
+    .success-logo {
+      width: 120px;
+      height: 120px;
+      margin-bottom: 2rem;
+    }
+
+    .success-title {
+      font-size: 2.5rem;
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+      background: linear-gradient(135deg, #cc5500, #ff8533);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .success-subtitle {
       font-size: 1.125rem;
-      margin-bottom: 0.5rem;
-    }
-
-    .success-message p {
       color: #a1a1aa;
-      font-size: 0.875rem;
-      margin: 0;
+      margin-bottom: 2.5rem;
+      line-height: 1.6;
     }
 
-    .manual-redirect {
+    .open-app-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.75rem;
+      background: linear-gradient(135deg, #cc5500, #e86a1a);
+      color: white;
+      font-size: 1.1rem;
+      font-weight: 600;
+      padding: 1rem 2rem;
+      border: none;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .open-app-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(204, 85, 0, 0.3);
+    }
+
+    .open-app-btn svg {
+      width: 24px;
+      height: 24px;
+    }
+
+    .fallback-text {
       margin-top: 1.5rem;
+      font-size: 0.875rem;
+      color: #666;
     }
 
-    .manual-redirect a {
-      color: #f9943b;
+    .fallback-text a {
+      color: #cc5500;
       text-decoration: none;
       font-weight: 500;
       transition: color 0.2s;
     }
 
-    .manual-redirect a:hover {
-      color: #ffa54d;
+    .fallback-text a:hover {
+      color: #ff8533;
+    }
+
+    .success-footer {
+      position: absolute;
+      bottom: 2rem;
+      color: #52525b;
+      font-size: 0.75rem;
     }
 
     /* Error message */
@@ -457,14 +507,7 @@
         <!-- Clerk auth container - Clerk renders its own card/form here -->
         <div id="clerk-auth"></div>
 
-        <!-- Success state -->
-        <div id="success-state" class="success-message hidden">
-          <h2>Authentication Successful</h2>
-          <p>Redirecting you back to Sentinel...</p>
-          <div class="manual-redirect">
-            <p>If you're not redirected automatically, <a href="#" id="manual-link">click here</a></p>
-          </div>
-        </div>
+        <!-- Success state - empty placeholder, full page success is below -->
 
         <!-- Error state -->
         <div id="error-state" class="error-message hidden">
@@ -553,6 +596,35 @@
     </div>
   </div>
 
+  <!-- Full Page Success State -->
+  <div id="success-state" class="success-page hidden">
+    <svg class="success-logo" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="50" cy="50" r="45" fill="#cc5500" fill-opacity="0.15" stroke="#cc5500" stroke-width="2.5"/>
+      <path d="M30 65 L50 25 L70 65 L50 52 Z" fill="#cc5500"/>
+      <circle cx="50" cy="50" r="35" fill="none" stroke="#cc5500" stroke-width="1" stroke-opacity="0.3"/>
+    </svg>
+
+    <h1 class="success-title">You're signed in!</h1>
+    <p class="success-subtitle">Return to Sentinel to continue</p>
+
+    <button id="open-app-btn" class="open-app-btn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+        <polyline points="15,3 21,3 21,9"/>
+        <line x1="10" y1="14" x2="21" y2="3"/>
+      </svg>
+      Open Sentinel
+    </button>
+
+    <p class="fallback-text">
+      If the app doesn't open, <a href="#" id="manual-link">click here</a>
+    </p>
+
+    <div class="success-footer">
+      &copy; 2025 Sentinel. All rights reserved.
+    </div>
+  </div>
+
   <!-- Clerk Frontend API -->
   <script
     async
@@ -576,6 +648,8 @@
     const errorState = document.getElementById('error-state');
     const errorMessage = document.getElementById('error-message');
     const manualLink = document.getElementById('manual-link');
+    const openAppBtn = document.getElementById('open-app-btn');
+    const layoutContainer = document.querySelector('.layout');
 
     // Get URL parameters
     const urlParams = new URLSearchParams(window.location.search);
@@ -599,11 +673,23 @@
     }
 
     function showSuccess(redirectUrl) {
-      loadingState.classList.add('hidden');
-      clerkAuth.classList.add('hidden');
+      // Hide the split layout entirely
+      layoutContainer.classList.add('hidden');
+      // Show full-page success state
       successState.classList.remove('hidden');
-      errorState.classList.add('hidden');
+
+      // Set up button click handler - direct deep link
+      openAppBtn.onclick = function() {
+        window.location.href = redirectUrl;
+      };
+
+      // Set fallback link
       manualLink.href = redirectUrl;
+
+      // Auto-attempt deep link after 1 second
+      setTimeout(function() {
+        window.location.href = redirectUrl;
+      }, 1000);
     }
 
     function showError(message) {
@@ -616,25 +702,23 @@
 
     function buildCallbackUrl(params) {
       const url = new URL(callbackUrl);
+      // Use URL fragment (#) instead of query params (?) for security
+      // Fragments are NOT sent to servers, logged, or exposed via referer headers
+      const fragment = new URLSearchParams();
       for (const [key, value] of Object.entries(params)) {
         if (value) {
-          url.searchParams.set(key, String(value));
+          fragment.set(key, String(value));
         }
       }
+      url.hash = fragment.toString();
       return url.toString();
     }
 
     function redirectToApp(params) {
       const redirectUrl = buildCallbackUrl(params);
-      console.log('Redirecting to:', redirectUrl);
+      console.log('Opening app with URL:', redirectUrl);
+      // Show success page - it handles auto-redirect after 1 second
       showSuccess(redirectUrl);
-      window.location.href = redirectUrl;
-
-      // Highlight manual link if redirect doesn't work
-      setTimeout(function() {
-        manualLink.style.color = '#22c55e';
-        manualLink.style.fontWeight = 'bold';
-      }, 2000);
     }
 
     async function handleSignedIn(clerk) {
@@ -647,6 +731,18 @@
         }
 
         const user = clerk.user;
+
+        // Extract expiry from JWT instead of calculating client-side
+        // This prevents clock manipulation attacks
+        let expiresAt;
+        try {
+          const jwtPayload = JSON.parse(atob(token.split('.')[1]));
+          expiresAt = jwtPayload.exp * 1000; // JWT exp is in seconds, convert to ms
+        } catch (e) {
+          console.warn('Could not parse JWT expiry, using fallback');
+          expiresAt = Date.now() + CONFIG.tokenExpiryMs;
+        }
+
         const params = {
           token: token,
           userId: user.id,
@@ -654,7 +750,7 @@
           firstName: user.firstName || '',
           lastName: user.lastName || '',
           imageUrl: user.imageUrl || '',
-          expiresAt: Date.now() + CONFIG.tokenExpiryMs,
+          expiresAt: expiresAt,
           state: state,
         };
 

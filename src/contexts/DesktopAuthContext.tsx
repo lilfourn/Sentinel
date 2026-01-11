@@ -10,6 +10,7 @@
 
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from "react";
 import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   type DesktopAuthState,
   type DesktopUser,
@@ -20,6 +21,7 @@ import {
   parseAuthCallback,
   getStoredToken,
   isTauriProduction,
+  migrateAuthStorage,
 } from "../lib/desktop-auth";
 
 interface DesktopAuthContextValue extends DesktopAuthState {
@@ -50,13 +52,20 @@ export function DesktopAuthProvider({ children }: DesktopAuthProviderProps) {
     if (hasInitialized.current) return;
     hasInitialized.current = true;
 
-    const storedState = getStoredAuthState();
-    setAuthState(storedState);
+    const initAuth = async () => {
+      // Migrate from localStorage to secure storage (one-time)
+      await migrateAuthStorage();
+      // Load stored auth state
+      const storedState = await getStoredAuthState();
+      setAuthState(storedState);
+    };
+
+    initAuth().catch(console.error);
   }, []);
 
   // Listen for deep link auth callbacks
   useEffect(() => {
-    const handleAuthCallback = (urls: string[]) => {
+    const handleAuthCallback = async (urls: string[]) => {
       for (const url of urls) {
         console.log("[DesktopAuth] Received URL:", url);
 
@@ -64,7 +73,7 @@ export function DesktopAuthProvider({ children }: DesktopAuthProviderProps) {
           // Check if it's a sign-out callback
           if (url.includes("action=signed-out")) {
             console.log("[DesktopAuth] Sign-out callback received");
-            clearAuthData();
+            await clearAuthData();
             setAuthState({
               isLoaded: true,
               isSignedIn: false,
@@ -79,7 +88,7 @@ export function DesktopAuthProvider({ children }: DesktopAuthProviderProps) {
 
           if (payload && payload.token && payload.userId) {
             console.log("[DesktopAuth] Sign-in callback received, user:", payload.userId);
-            storeAuthData(payload);
+            await storeAuthData(payload);
 
             const user: DesktopUser = {
               id: payload.userId,
@@ -95,6 +104,16 @@ export function DesktopAuthProvider({ children }: DesktopAuthProviderProps) {
               user,
               token: payload.token,
             });
+
+            // Bring the app window to foreground
+            try {
+              const appWindow = getCurrentWindow();
+              await appWindow.setFocus();
+              await appWindow.show();
+              console.log("[DesktopAuth] Window brought to foreground");
+            } catch (e) {
+              console.error("[DesktopAuth] Failed to focus window:", e);
+            }
           } else {
             console.error("[DesktopAuth] Invalid auth callback payload");
           }
@@ -118,7 +137,7 @@ export function DesktopAuthProvider({ children }: DesktopAuthProviderProps) {
   const signOut = useCallback(async () => {
     console.log("[DesktopAuth] Signing out");
     // Clear local state immediately
-    clearAuthData();
+    await clearAuthData();
     setAuthState({
       isLoaded: true,
       isSignedIn: false,
@@ -130,7 +149,7 @@ export function DesktopAuthProvider({ children }: DesktopAuthProviderProps) {
   }, []);
 
   const getToken = useCallback(async (): Promise<string | null> => {
-    return getStoredToken();
+    return await getStoredToken();
   }, []);
 
   const value: DesktopAuthContextValue = {

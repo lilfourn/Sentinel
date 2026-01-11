@@ -103,10 +103,6 @@ pub fn get_terminal_tools() -> Vec<Value> {
                     "working_dir": {
                         "type": "string",
                         "description": "Optional working directory for the command"
-                    },
-                    "force": {
-                        "type": "boolean",
-                        "description": "If true, bypass safety checks for user-approved commands. Only use when user has explicitly approved the command."
                     }
                 },
                 "required": ["command"]
@@ -164,19 +160,15 @@ pub async fn execute_shell(input: &Value) -> Result<String, String> {
         }
     }
 
-    // Check if force mode is requested (user approved the command)
-    let force_mode = input
-        .get("force")
-        .and_then(|f| f.as_bool())
-        .unwrap_or(false);
-
-    // Load shell permissions to check if command is pre-approved
+    // Load shell permissions to check if command is pre-approved by server config
+    // Note: force_mode is NEVER controllable from frontend input for security
     let permissions = ShellPermissions::load();
     let is_pre_approved = permissions.is_allowed(command);
 
     // Create sandbox with working directory as root
+    // Only pre-approved commands from server-side config can bypass safety checks
     let sandbox = CommandSandbox::new(working_dir.map(|d| d.into()))
-        .with_force_mode(force_mode || is_pre_approved);
+        .with_force_mode(is_pre_approved);
 
     // Parse command through allowlist
     let allowed_cmd = match sandbox.parse_command(command) {

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, Component, type ReactNode } from 'react';
 import { MessageSquare, AlertTriangle } from 'lucide-react';
 import { useChatStore } from '../../stores/chat-store';
+import { useShallow } from 'zustand/react/shallow';
 import { MessageItem } from './MessageItem';
 
 // Threshold in pixels - if user is within this distance from bottom, auto-scroll
@@ -69,7 +70,8 @@ class MessageListErrorBoundary extends Component<
 }
 
 export function MessageList() {
-  const { messages } = useChatStore();
+  // Use selector to only subscribe to messages array, preventing re-renders on other state changes
+  const messages = useChatStore(useShallow((state) => state.messages));
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   // Track if user is near the bottom (should auto-scroll)

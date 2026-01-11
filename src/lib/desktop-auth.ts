@@ -7,12 +7,14 @@
  * Flow:
  * 1. User clicks "Sign In" -> opens system browser to web auth page
  * 2. User authenticates via Clerk on the web
- * 3. Web page redirects to sentinel://auth-callback?token=...
+ * 3. Web page redirects to sentinel://auth-callback#token=... (fragment for security)
  * 4. Tauri handles deep link and stores the session
  */
 
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { authCallbackSchema, parseStoredUser, type AuthCallbackPayload } from "./schemas/auth";
+import * as secureStorage from "./secure-storage";
 
 // Auth configuration
 const AUTH_CONFIG = {
@@ -41,15 +43,8 @@ export interface DesktopAuthState {
   token: string | null;
 }
 
-export interface AuthCallbackPayload {
-  token: string;
-  userId: string;
-  email?: string;
-  firstName?: string;
-  lastName?: string;
-  imageUrl?: string;
-  expiresAt?: number;
-}
+// Re-export the Zod-validated type
+export type { AuthCallbackPayload } from "./schemas/auth";
 
 /**
  * Check if running in Tauri environment
@@ -70,13 +65,33 @@ export function isTauriProduction(): boolean {
 }
 
 /**
+ * Generate a cryptographically secure auth state token
+ */
+export function generateAuthState(): string {
+  const array = new Uint8Array(32);
+  crypto.getRandomValues(array);
+  const state = Array.from(array, (b) => b.toString(16).padStart(2, "0")).join("");
+  sessionStorage.setItem("sentinel_auth_state", state);
+  return state;
+}
+
+/**
+ * Validate auth state to prevent CSRF attacks
+ * State is one-time use - cleared after validation
+ */
+export function validateAuthState(receivedState: string | null): boolean {
+  const storedState = sessionStorage.getItem("sentinel_auth_state");
+  sessionStorage.removeItem("sentinel_auth_state"); // One-time use
+  return storedState !== null && receivedState !== null && storedState === receivedState;
+}
+
+/**
  * Open the system browser for authentication
  */
 export async function openAuthInBrowser(): Promise<void> {
   const authUrl = new URL(AUTH_CONFIG.webAuthUrl);
-  // Add a state parameter for security (prevents CSRF)
-  const state = crypto.randomUUID();
-  sessionStorage.setItem("auth_state", state);
+  // Generate crypto-secure state for CSRF protection
+  const state = generateAuthState();
   authUrl.searchParams.set("state", state);
   authUrl.searchParams.set("callback", `${AUTH_CONFIG.callbackScheme}://auth-callback`);
 
@@ -95,9 +110,10 @@ export async function openSignOutInBrowser(): Promise<void> {
 }
 
 /**
- * Store auth data securely
+ * Store auth data securely using Tauri store plugin
+ * Falls back to localStorage if store is not available
  */
-export function storeAuthData(payload: AuthCallbackPayload): void {
+export async function storeAuthData(payload: AuthCallbackPayload): Promise<void> {
   const user: DesktopUser = {
     id: payload.userId,
     email: payload.email || null,
@@ -106,50 +122,56 @@ export function storeAuthData(payload: AuthCallbackPayload): void {
     imageUrl: payload.imageUrl || null,
   };
 
-  localStorage.setItem(AUTH_CONFIG.storageKey, payload.token);
-  localStorage.setItem(AUTH_CONFIG.userStorageKey, JSON.stringify(user));
+  await secureStorage.storeToken(payload.token);
+  await secureStorage.storeUser(user);
 
   if (payload.expiresAt) {
-    localStorage.setItem(`${AUTH_CONFIG.storageKey}_expires`, payload.expiresAt.toString());
+    await secureStorage.storeExpiry(payload.expiresAt);
   }
 }
 
 /**
  * Clear auth data (sign out)
  */
-export function clearAuthData(): void {
-  localStorage.removeItem(AUTH_CONFIG.storageKey);
-  localStorage.removeItem(AUTH_CONFIG.userStorageKey);
-  localStorage.removeItem(`${AUTH_CONFIG.storageKey}_expires`);
-  sessionStorage.removeItem("auth_state");
+export async function clearAuthData(): Promise<void> {
+  await secureStorage.clearAllAuth();
+  sessionStorage.removeItem("sentinel_auth_state");
 }
 
 /**
- * Get stored auth token
+ * Get stored auth token from secure storage
  */
-export function getStoredToken(): string | null {
-  const token = localStorage.getItem(AUTH_CONFIG.storageKey);
-  const expiresAt = localStorage.getItem(`${AUTH_CONFIG.storageKey}_expires`);
-
+export async function getStoredToken(): Promise<string | null> {
   // Check if token is expired
-  if (expiresAt && Date.now() > parseInt(expiresAt, 10)) {
-    clearAuthData();
+  if (await secureStorage.isTokenExpired()) {
+    await clearAuthData();
     return null;
   }
 
-  return token;
+  return secureStorage.getToken();
 }
 
 /**
- * Get stored user data
+ * Get stored user data from secure storage with Zod validation
  */
-export function getStoredUser(): DesktopUser | null {
-  const userData = localStorage.getItem(AUTH_CONFIG.userStorageKey);
-  if (!userData) return null;
-
+export async function getStoredUser(): Promise<DesktopUser | null> {
   try {
-    return JSON.parse(userData) as DesktopUser;
+    const userData = await secureStorage.getUser<unknown>();
+    if (!userData) return null;
+
+    // Validate with Zod schema
+    const validated = parseStoredUser(userData);
+    if (!validated) return null;
+
+    return {
+      id: validated.id,
+      email: validated.email,
+      firstName: validated.firstName,
+      lastName: validated.lastName,
+      imageUrl: validated.imageUrl,
+    };
   } catch {
+    console.error("[Auth] Failed to get stored user data");
     return null;
   }
 }
@@ -157,9 +179,9 @@ export function getStoredUser(): DesktopUser | null {
 /**
  * Get current auth state from storage
  */
-export function getStoredAuthState(): DesktopAuthState {
-  const token = getStoredToken();
-  const user = getStoredUser();
+export async function getStoredAuthState(): Promise<DesktopAuthState> {
+  const token = await getStoredToken();
+  const user = await getStoredUser();
 
   return {
     isLoaded: true,
@@ -170,40 +192,60 @@ export function getStoredAuthState(): DesktopAuthState {
 }
 
 /**
- * Parse auth callback URL parameters
+ * Migrate auth data from localStorage to secure storage (call on app startup)
+ */
+export async function migrateAuthStorage(): Promise<void> {
+  await secureStorage.migrateFromLocalStorage();
+}
+
+/**
+ * Parse auth callback URL - supports both hash fragments (secure) and query params (legacy)
+ * Hash fragments are preferred as they are not sent to servers or logged
+ * Uses Zod validation for runtime type safety
  */
 export function parseAuthCallback(url: string): AuthCallbackPayload | null {
   try {
     const urlObj = new URL(url);
-    const params = urlObj.searchParams;
 
-    const token = params.get("token");
-    const userId = params.get("userId");
-
-    if (!token || !userId) {
-      console.error("Missing required auth callback parameters");
-      return null;
+    // Try hash fragment first (new secure method)
+    // Fall back to query params for backwards compatibility with deployed web-auth page
+    let params: URLSearchParams;
+    if (urlObj.hash && urlObj.hash.length > 1) {
+      params = new URLSearchParams(urlObj.hash.slice(1));
+    } else {
+      // Fallback to query params (legacy, less secure)
+      console.warn("[Auth] Using legacy query params - deploy updated web-auth page for better security");
+      params = urlObj.searchParams;
     }
 
-    // Verify state to prevent CSRF
-    const state = params.get("state");
-    const storedState = sessionStorage.getItem("auth_state");
-    if (state && storedState && state !== storedState) {
-      console.error("Auth state mismatch - possible CSRF attack");
-      return null;
-    }
-
-    return {
-      token,
-      userId,
+    // Build raw data object for validation
+    const rawData = {
+      token: params.get("token") ?? "",
+      userId: params.get("userId") ?? "",
       email: params.get("email") || undefined,
       firstName: params.get("firstName") || undefined,
       lastName: params.get("lastName") || undefined,
       imageUrl: params.get("imageUrl") || undefined,
       expiresAt: params.get("expiresAt") ? parseInt(params.get("expiresAt")!, 10) : undefined,
+      state: params.get("state") ?? "",
     };
+
+    // Validate with Zod schema
+    const result = authCallbackSchema.safeParse(rawData);
+    if (!result.success) {
+      console.error("[Auth] Validation failed:", result.error.format());
+      return null;
+    }
+
+    // Verify state to prevent CSRF attacks (after validation confirms state exists)
+    if (!validateAuthState(result.data.state)) {
+      console.error("[Auth] CSRF validation failed - state mismatch");
+      return null;
+    }
+
+    return result.data;
   } catch (error) {
-    console.error("Failed to parse auth callback URL:", error);
+    console.error("[Auth] Failed to parse auth callback URL:", error);
     return null;
   }
 }
@@ -216,7 +258,7 @@ export async function listenForAuthCallback(
   onSuccess: (payload: AuthCallbackPayload) => void,
   onError: (error: string) => void
 ): Promise<UnlistenFn> {
-  return listen<string>("deep-link://new-url", (event) => {
+  return listen<string>("deep-link://new-url", async (event) => {
     const url = event.payload;
     console.log("Received deep link:", url);
 
@@ -226,10 +268,10 @@ export async function listenForAuthCallback(
       if (payload) {
         // Check for sign-out action
         if (url.includes("action=signed-out")) {
-          clearAuthData();
+          await clearAuthData();
           onSuccess({ ...payload, token: "", userId: "" });
         } else {
-          storeAuthData(payload);
+          await storeAuthData(payload);
           onSuccess(payload);
         }
       } else {
@@ -243,5 +285,5 @@ export async function listenForAuthCallback(
  * Get a token for API calls (compatible with Clerk's getToken interface)
  */
 export async function getToken(): Promise<string | null> {
-  return getStoredToken();
+  return await getStoredToken();
 }

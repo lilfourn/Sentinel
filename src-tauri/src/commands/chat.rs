@@ -8,6 +8,7 @@ use crate::ai::chat::{
     run_chat_agent, run_openai_chat_agent, ChatAgentResult, ContextItem, ConversationMessage,
 };
 use crate::billing::{BillingState, LimitCheckResult};
+use crate::rate_limit::RateLimitState;
 use crate::security::PathValidator;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -76,6 +77,7 @@ pub async fn chat_stream(
     app: AppHandle,
     abort_flag: State<'_, ChatAbortFlag>,
     billing: State<'_, BillingState>,
+    rate_limiter: State<'_, RateLimitState>,
     request: ChatStreamRequest,
 ) -> Result<ChatStreamResponse, String> {
     info!(
@@ -84,6 +86,23 @@ pub async fn chat_stream(
         history_len = request.history.len(),
         "Starting chat stream"
     );
+
+    // Check rate limit before processing
+    let user_id = request.user_id.as_deref().unwrap_or("anonymous");
+    if !rate_limiter.check_and_record(user_id) {
+        let _ = app.emit(
+            "chat:limit-error",
+            serde_json::json!({
+                "reason": "Rate limit exceeded. Please wait before sending more messages.",
+                "upgradeUrl": null
+            }),
+        );
+        return Ok(ChatStreamResponse {
+            success: false,
+            response: None,
+            error: Some("Rate limit exceeded. Please wait a moment before trying again.".into()),
+        });
+    }
 
     // Reset abort flag at start of new chat
     abort_flag.0.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -137,6 +156,50 @@ pub async fn chat_stream(
                 debug!(remaining = remaining, "Limit check passed");
             }
         }
+
+        // === BILLING: Check monthly token quota ===
+        let (monthly_input, monthly_output) = billing
+            .usage_tracker
+            .get_monthly_token_totals(user_id)
+            .unwrap_or((0, 0));
+
+        match billing.limit_enforcer.check_token_quota(
+            subscription.tier,
+            monthly_input,
+            monthly_output,
+        ) {
+            Err(reason) => {
+                let error_message = reason.to_string();
+                info!(reason = %error_message, "Token quota exceeded");
+
+                let _ = app.emit(
+                    "chat:limit-error",
+                    serde_json::json!({
+                        "reason": error_message,
+                        "upgradeUrl": Some("sentinel://upgrade"),
+                    }),
+                );
+
+                return Ok(ChatStreamResponse {
+                    success: false,
+                    response: None,
+                    error: Some(error_message),
+                });
+            }
+            Ok(Some(warning)) => {
+                // Approaching quota - emit warning but allow request
+                let warning_message = warning.to_string();
+                debug!(warning = %warning_message, "Token quota warning");
+                let _ = app.emit(
+                    "chat:quota-warning",
+                    serde_json::json!({ "message": warning_message }),
+                );
+            }
+            Ok(None) => {
+                // Within quota, no warning needed
+            }
+        }
+        // === END TOKEN QUOTA CHECK ===
     } else {
         debug!("No user_id provided, skipping billing check");
     }

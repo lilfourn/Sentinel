@@ -9,10 +9,29 @@
 use chrono::{Local, Utc};
 use rusqlite::{params, Connection};
 use std::path::PathBuf;
-use std::sync::Mutex;
-use tracing::debug;
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use tracing::{debug, warn};
 
 use super::types::DailyUsage;
+
+/// Valid model column names for SQL queries - prevents injection
+const VALID_MODEL_COLUMNS: &[&str] = &[
+    "haiku_requests",
+    "sonnet_requests",
+    "opus_requests",
+    "gpt52_requests",
+    "gpt5mini_requests",
+    "gpt5nano_requests",
+];
+
+/// Helper to acquire mutex lock with poison recovery
+/// Instead of panicking on poisoned mutex, recovers the inner value
+fn acquire_lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned: PoisonError<MutexGuard<'_, T>>| {
+        warn!("Mutex was poisoned, recovering inner value");
+        poisoned.into_inner()
+    })
+}
 
 /// SQLite-backed usage tracker
 pub struct UsageTracker {
@@ -99,7 +118,7 @@ impl UsageTracker {
 
     /// Get usage for today
     pub fn get_today_usage(&self, user_id: &str) -> Result<DailyUsage, String> {
-        let conn = self.conn.lock().unwrap();
+        let conn = acquire_lock(&self.conn);
         let today = Self::today_local();
 
         let result = conn.query_row(
@@ -146,7 +165,7 @@ impl UsageTracker {
         input_tokens: u64,
         output_tokens: u64,
     ) -> Result<(), String> {
-        let conn = self.conn.lock().unwrap();
+        let conn = acquire_lock(&self.conn);
         let today = Self::today_local();
 
         // Determine which column to increment
@@ -163,6 +182,11 @@ impl UsageTracker {
         } else {
             "haiku_requests" // Default to haiku
         };
+
+        // Validate column name against allowlist to prevent SQL injection
+        if !VALID_MODEL_COLUMNS.contains(&model_column) {
+            return Err(format!("Invalid model column: {}", model_column));
+        }
 
         let thinking_increment: i32 = if extended_thinking { 1 } else { 0 };
 
@@ -199,7 +223,7 @@ impl UsageTracker {
 
     /// Get usage history for the current month
     pub fn get_month_usage(&self, user_id: &str) -> Result<Vec<DailyUsage>, String> {
-        let conn = self.conn.lock().unwrap();
+        let conn = acquire_lock(&self.conn);
         let now = Local::now();
         let month_start = format!("{}-{:02}-01", now.year(), now.month());
 
@@ -241,7 +265,7 @@ impl UsageTracker {
 
     /// Increment organize request counter atomically
     pub fn increment_organize(&self, user_id: &str) -> Result<(), String> {
-        let conn = self.conn.lock().unwrap();
+        let conn = acquire_lock(&self.conn);
         let today = Self::today_local();
 
         conn.execute(
@@ -261,7 +285,7 @@ impl UsageTracker {
 
     /// Increment rename request counter atomically
     pub fn increment_rename(&self, user_id: &str) -> Result<(), String> {
-        let conn = self.conn.lock().unwrap();
+        let conn = acquire_lock(&self.conn);
         let today = Self::today_local();
 
         conn.execute(
@@ -283,7 +307,7 @@ impl UsageTracker {
     ///
     /// Returns (total_input_tokens, total_output_tokens)
     pub fn get_monthly_token_totals(&self, user_id: &str) -> Result<(u64, u64), String> {
-        let conn = self.conn.lock().unwrap();
+        let conn = acquire_lock(&self.conn);
         let now = Local::now();
         let month_start = format!("{}-{:02}-01", now.year(), now.month());
 
@@ -304,7 +328,7 @@ impl UsageTracker {
     /// Clear old usage records (older than 90 days)
     #[allow(dead_code)]
     pub fn cleanup_old_records(&self) -> Result<usize, String> {
-        let conn = self.conn.lock().unwrap();
+        let conn = acquire_lock(&self.conn);
         let cutoff = Utc::now() - chrono::Duration::days(90);
         let cutoff_date = cutoff.format("%Y-%m-%d").to_string();
 
@@ -321,16 +345,18 @@ impl UsageTracker {
     /// Reset all usage for a user (for testing)
     #[cfg(test)]
     pub fn reset_user_usage(&self, user_id: &str) -> Result<(), String> {
-        let conn = self.conn.lock().unwrap();
+        let conn = acquire_lock(&self.conn);
         conn.execute("DELETE FROM daily_usage WHERE user_id = ?", params![user_id])
             .map_err(|e| format!("Failed to reset usage: {}", e))?;
         Ok(())
     }
 }
 
-// Implement Send + Sync for thread safety
-unsafe impl Send for UsageTracker {}
-unsafe impl Sync for UsageTracker {}
+// Note: UsageTracker is automatically Send + Sync because:
+// - Mutex<T> is Send when T: Send (Connection is Send)
+// - Mutex<T> is Sync when T: Send (Connection is Send)
+// The Mutex provides exclusive access, ensuring thread safety.
+// No unsafe impl needed - the compiler derives it correctly.
 
 use chrono::Datelike;
 

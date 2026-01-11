@@ -7,6 +7,7 @@ mod history;
 mod jobs;
 mod models;
 pub mod quarantine;
+mod rate_limit;
 mod security;
 mod services;
 mod tree;
@@ -18,6 +19,7 @@ mod wal;
 use billing::BillingState;
 use commands::*;
 use commands::grok::{GrokState, GrokAbortFlag};
+use rate_limit::RateLimitState;
 use services::watcher::create_watcher_handle;
 use tracing_subscriber::EnvFilter;
 
@@ -60,6 +62,8 @@ pub fn run() {
     let grok_state = GrokState::default();
     let grok_abort_flag = GrokAbortFlag::default();
     let billing_state = BillingState::default();
+    // Rate limiter: 20 requests per 60 seconds per user
+    let rate_limit_state = RateLimitState::new(20, 60);
 
     // Build base Tauri app
     // Use localhost plugin in release builds to serve via HTTP (Clerk requires this)
@@ -80,6 +84,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_store::Builder::new().build())
         .manage(watcher_handle)
         .manage(vector_state)
         .manage(tree_state)
@@ -89,6 +94,7 @@ pub fn run() {
         .manage(grok_state)
         .manage(grok_abort_flag)
         .manage(billing_state)
+        .manage(rate_limit_state)
         .invoke_handler(tauri::generate_handler![
             // Filesystem commands
             read_directory,

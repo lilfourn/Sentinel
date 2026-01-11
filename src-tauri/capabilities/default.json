@@ -6,6 +6,8 @@
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
+    "core:window:allow-set-focus",
+    "core:window:allow-show",
     "opener:default",
     "fs:default",
     "fs:allow-read",
@@ -23,6 +25,7 @@
     "deep-link:default",
     "updater:default",
     "dialog:default",
-    "process:allow-restart"
+    "process:allow-restart",
+    "store:default"
   ]
 }
