@@ -6,7 +6,6 @@ const http = httpRouter();
 
 // Environment variable helpers - access via process.env in Convex runtime
 function getEnv(key: string): string | undefined {
-  // @ts-expect-error - process.env is available in Convex runtime
   return typeof process !== "undefined" ? process.env[key] : undefined;
 }
 

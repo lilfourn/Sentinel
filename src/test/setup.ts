@@ -60,7 +60,7 @@ vi.mock('@clerk/clerk-react', () => ({
   useUser: vi.fn(() => ({ user: null, isLoaded: true, isSignedIn: false })),
   useAuth: vi.fn(() => ({ isLoaded: true, isSignedIn: false, getToken: vi.fn() })),
   ClerkProvider: ({ children }: { children: React.ReactNode }) => children,
-  SignedIn: ({ children }: { children: React.ReactNode }) => null,
+  SignedIn: (_props: { children: React.ReactNode }) => null,
   SignedOut: ({ children }: { children: React.ReactNode }) => children,
 }));
 

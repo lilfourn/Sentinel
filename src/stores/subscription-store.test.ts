@@ -10,7 +10,6 @@ describe('SubscriptionStore', () => {
     // Reset store state
     useSubscriptionStore.setState({
       tier: 'free',
-      isLoaded: true,
     });
     vi.clearAllMocks();
   });
@@ -54,14 +53,6 @@ describe('SubscriptionStore', () => {
 
       useSubscriptionStore.setState({ tier: 'free' });
       expect(useSubscriptionStore.getState().tier).toBe('free');
-    });
-
-    it('should track loaded state', () => {
-      useSubscriptionStore.setState({ isLoaded: false });
-      expect(useSubscriptionStore.getState().isLoaded).toBe(false);
-
-      useSubscriptionStore.setState({ isLoaded: true });
-      expect(useSubscriptionStore.getState().isLoaded).toBe(true);
     });
   });
 });

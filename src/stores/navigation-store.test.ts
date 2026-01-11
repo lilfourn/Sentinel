@@ -96,11 +96,11 @@ describe('NavigationStore', () => {
   });
 
   describe('Sorting', () => {
-    it('should change sort field to date', () => {
+    it('should change sort field to modified', () => {
       const { setSortField } = useNavigationStore.getState();
 
-      setSortField('date');
-      expect(useNavigationStore.getState().sortField).toBe('date');
+      setSortField('modified');
+      expect(useNavigationStore.getState().sortField).toBe('modified');
     });
 
     it('should change sort field to size', () => {
