@@ -14,6 +14,7 @@ import {
   FileType,
   AlertTriangle,
 } from 'lucide-react';
+import { useShallow } from 'zustand/react/shallow';
 import { cn } from '../../lib/utils';
 import {
   useOrganizeStore,
@@ -32,6 +33,40 @@ import { PlanPreview } from './PlanPreview';
 import './ChangesPanel.css';
 
 export function ChangesPanel() {
+  // Use useShallow for reactive state to prevent unnecessary re-renders
+  const state = useOrganizeStore(
+    useShallow((s) => ({
+      isOpen: s.isOpen,
+      targetFolder: s.targetFolder,
+      thoughts: s.thoughts,
+      currentPhase: s.currentPhase,
+      currentPlan: s.currentPlan,
+      isExecuting: s.isExecuting,
+      isAnalyzing: s.isAnalyzing,
+      executedOps: s.executedOps,
+      awaitingInstruction: s.awaitingInstruction,
+      awaitingSimplificationChoice: s.awaitingSimplificationChoice,
+      phase: s.phase,
+      analysisError: s.analysisError,
+      latestEvent: s.latestEvent,
+      executionProgress: s.executionProgress,
+      analysisProgress: s.analysisProgress,
+      executionErrors: s.executionErrors,
+      isOfflineMode: s.isOfflineMode,
+    }))
+  );
+
+  // Actions are stable references, use individual selectors
+  const closeOrganizer = useOrganizeStore((s) => s.closeOrganizer);
+  const setUserInstruction = useOrganizeStore((s) => s.setUserInstruction);
+  const submitInstruction = useOrganizeStore((s) => s.submitInstruction);
+  const acceptSimplification = useOrganizeStore((s) => s.acceptSimplification);
+  const rejectSimplification = useOrganizeStore((s) => s.rejectSimplification);
+  const acceptPlanParallel = useOrganizeStore((s) => s.acceptPlanParallel);
+  const rejectPlan = useOrganizeStore((s) => s.rejectPlan);
+  const openPlanEditModal = useOrganizeStore((s) => s.openPlanEditModal);
+
+  // Destructure state for easier access
   const {
     isOpen,
     targetFolder,
@@ -41,24 +76,16 @@ export function ChangesPanel() {
     isExecuting,
     isAnalyzing,
     executedOps,
-    closeOrganizer,
-    setUserInstruction,
-    submitInstruction,
     awaitingInstruction,
     awaitingSimplificationChoice,
-    acceptSimplification,
-    rejectSimplification,
     phase,
     analysisError,
     latestEvent,
     executionProgress,
-    acceptPlanParallel,
-    rejectPlan,
     analysisProgress,
     executionErrors,
-    openPlanEditModal,
     isOfflineMode,
-  } = useOrganizeStore();
+  } = state;
 
   const scrollRef = useRef<HTMLDivElement>(null);
 

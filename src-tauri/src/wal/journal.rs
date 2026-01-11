@@ -476,9 +476,12 @@ impl WALManager {
                     // Try non-blocking lock
                     if lock_file.try_lock_exclusive().is_ok() {
                         // We got the lock, so no one is using it - safe to delete
-                        drop(lock_file);
-                        let _ = fs::remove_file(&lock_path);
-                        tracing::debug!(path = %lock_path.display(), "Cleaned up stale lock file");
+                        // IMPORTANT: Delete while still holding the lock to prevent TOCTOU race
+                        // The lock_file will be dropped after remove_file, releasing the lock
+                        if fs::remove_file(&lock_path).is_ok() {
+                            tracing::debug!(path = %lock_path.display(), "Cleaned up stale lock file");
+                        }
+                        // lock_file is dropped here, releasing the lock after deletion
                     }
                     // If try_lock fails, another process has the lock - leave it alone
                 }

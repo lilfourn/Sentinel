@@ -2,6 +2,7 @@ import { useRef, useCallback, useEffect, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { invoke } from '@tauri-apps/api/core';
 import { useQueryClient } from '@tanstack/react-query';
+import { useShallow } from 'zustand/react/shallow';
 import { FileRow } from './FileRow';
 import { NewItemRow } from './NewItemRow';
 import { SelectionOverlay } from './SelectionOverlay';
@@ -37,23 +38,42 @@ const HEADER_HEIGHT = 30;
 export function FileListView({ entries }: FileListViewProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
-  const { navigateTo, setQuickLookPath, currentPath, showHidden } = useNavigationStore();
-  const {
-    selectedPaths,
-    focusedPath,
-    select,
-    selectRange,
-    clearSelection,
-    selectMultiple,
-    editingPath,
-    creatingType,
-    creatingInPath,
-    startEditing,
-    stopEditing,
-    startCreating,
-    stopCreating,
-  } = useSelectionStore();
-  const { startOrganize } = useOrganizeStore();
+
+  // Navigation store - use useShallow for state, individual selectors for actions
+  const navState = useNavigationStore(
+    useShallow((s) => ({
+      currentPath: s.currentPath,
+      showHidden: s.showHidden,
+    }))
+  );
+  const navigateTo = useNavigationStore((s) => s.navigateTo);
+  const setQuickLookPath = useNavigationStore((s) => s.setQuickLookPath);
+  const { currentPath, showHidden } = navState;
+
+  // Selection store - use useShallow for state, individual selectors for actions
+  const selState = useSelectionStore(
+    useShallow((s) => ({
+      selectedPaths: s.selectedPaths,
+      focusedPath: s.focusedPath,
+      editingPath: s.editingPath,
+      creatingType: s.creatingType,
+      creatingInPath: s.creatingInPath,
+    }))
+  );
+  const select = useSelectionStore((s) => s.select);
+  const selectRange = useSelectionStore((s) => s.selectRange);
+  const clearSelection = useSelectionStore((s) => s.clearSelection);
+  const selectMultiple = useSelectionStore((s) => s.selectMultiple);
+  const startEditing = useSelectionStore((s) => s.startEditing);
+  const stopEditing = useSelectionStore((s) => s.stopEditing);
+  const startCreating = useSelectionStore((s) => s.startCreating);
+  const stopCreating = useSelectionStore((s) => s.stopCreating);
+  const { selectedPaths, focusedPath, editingPath, creatingType, creatingInPath } = selState;
+
+  // Organize store - single action selector
+  const startOrganize = useOrganizeStore((s) => s.startOrganize);
+
+  // Subscription store - already using selector
   const userId = useSubscriptionStore((s) => s.userId);
   const {
     dropTarget,

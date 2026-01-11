@@ -1,7 +1,7 @@
 use crate::models::{DirectoryContents, FileEntry, FileMetadata};
 use crate::security::cycle_detection::{self, CycleError};
 use crate::security::PathValidator;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Structured error for directory operations
 #[derive(Debug, Clone, serde::Serialize)]
@@ -88,43 +88,38 @@ impl From<CycleError> for DragDropError {
     }
 }
 
-/// Read directory contents
-#[tauri::command]
-pub async fn read_directory(
-    path: String,
-    show_hidden: Option<bool>,
-) -> Result<DirectoryContents, DirectoryError> {
-    let path_obj = Path::new(&path);
-    let show_hidden = show_hidden.unwrap_or(false);
+/// Read directory contents (sync implementation)
+fn read_directory_sync(path: &Path, show_hidden: bool) -> Result<DirectoryContents, DirectoryError> {
+    let path_str = path.to_string_lossy().to_string();
 
-    if !path_obj.exists() {
+    if !path.exists() {
         return Err(DirectoryError {
             code: "NOT_FOUND".to_string(),
-            message: format!("Path does not exist: {:?}", path_obj),
-            path: path.clone(),
+            message: format!("Path does not exist: {:?}", path),
+            path: path_str,
             is_permission_error: false,
         });
     }
 
-    if !path_obj.is_dir() {
+    if !path.is_dir() {
         return Err(DirectoryError {
             code: "NOT_DIRECTORY".to_string(),
-            message: format!("Path is not a directory: {:?}", path_obj),
-            path: path.clone(),
+            message: format!("Path is not a directory: {:?}", path),
+            path: path_str,
             is_permission_error: false,
         });
     }
 
-    let dir_name = path_obj
+    let dir_name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| path_obj.to_string_lossy().to_string());
+        .unwrap_or_else(|| path.to_string_lossy().to_string());
 
-    let parent_path = path_obj.parent().map(|p| p.to_string_lossy().to_string());
+    let parent_path = path.parent().map(|p| p.to_string_lossy().to_string());
 
     let mut entries: Vec<FileEntry> = Vec::new();
 
-    let read_dir = match std::fs::read_dir(path_obj) {
+    let read_dir = match std::fs::read_dir(path) {
         Ok(rd) => rd,
         Err(e) => {
             let is_permission_error =
@@ -142,7 +137,7 @@ pub async fn read_directory(
                 } else {
                     format!("Failed to read directory: {}", e)
                 },
-                path: path.clone(),
+                path: path_str,
                 is_permission_error,
             });
         }
@@ -183,7 +178,7 @@ pub async fn read_directory(
     let total_count = entries.len();
 
     Ok(DirectoryContents {
-        path: path_obj.to_string_lossy().to_string(),
+        path: path.to_string_lossy().to_string(),
         name: dir_name,
         parent_path,
         entries,
@@ -191,11 +186,27 @@ pub async fn read_directory(
     })
 }
 
-/// Get detailed file metadata
+/// Read directory contents
 #[tauri::command]
-pub async fn get_file_metadata(path: String) -> Result<FileMetadata, String> {
-    let path = Path::new(&path);
+pub async fn read_directory(
+    path: String,
+    show_hidden: Option<bool>,
+) -> Result<DirectoryContents, DirectoryError> {
+    let path_buf = PathBuf::from(&path);
+    let show_hidden = show_hidden.unwrap_or(false);
 
+    tokio::task::spawn_blocking(move || read_directory_sync(&path_buf, show_hidden))
+        .await
+        .map_err(|e| DirectoryError {
+            code: "TASK_ERROR".to_string(),
+            message: format!("Task failed: {}", e),
+            path,
+            is_permission_error: false,
+        })?
+}
+
+/// Get detailed file metadata (sync implementation)
+fn get_file_metadata_sync(path: &Path) -> Result<FileMetadata, String> {
     if !path.exists() {
         return Err(format!("Path does not exist: {:?}", path));
     }
@@ -258,12 +269,18 @@ pub async fn get_file_metadata(path: String) -> Result<FileMetadata, String> {
     })
 }
 
-/// Rename a file or directory
+/// Get detailed file metadata
 #[tauri::command]
-pub async fn rename_file(old_path: String, new_path: String) -> Result<(), String> {
-    let old = Path::new(&old_path);
-    let new = Path::new(&new_path);
+pub async fn get_file_metadata(path: String) -> Result<FileMetadata, String> {
+    let path_buf = PathBuf::from(&path);
 
+    tokio::task::spawn_blocking(move || get_file_metadata_sync(&path_buf))
+        .await
+        .map_err(|e| format!("Task failed: {}", e))?
+}
+
+/// Rename a file or directory (sync implementation)
+fn rename_file_sync(old: &Path, new: &Path) -> Result<(), String> {
     if !old.exists() {
         return Err(format!("Source path does not exist: {:?}", old));
     }
@@ -279,6 +296,17 @@ pub async fn rename_file(old_path: String, new_path: String) -> Result<(), Strin
     std::fs::rename(old, new).map_err(|e| format!("Failed to rename: {}", e))?;
 
     Ok(())
+}
+
+/// Rename a file or directory
+#[tauri::command]
+pub async fn rename_file(old_path: String, new_path: String) -> Result<(), String> {
+    let old = PathBuf::from(&old_path);
+    let new = PathBuf::from(&new_path);
+
+    tokio::task::spawn_blocking(move || rename_file_sync(&old, &new))
+        .await
+        .map_err(|e| format!("Task failed: {}", e))?
 }
 
 /// Check if a path is an iCloud placeholder file (cloud-only, not downloaded)
@@ -299,11 +327,8 @@ fn is_icloud_placeholder(_path: &Path) -> bool {
     false
 }
 
-/// Move a file or directory to trash (safe delete)
-#[tauri::command]
-pub async fn delete_to_trash(path: String) -> Result<(), DeleteError> {
-    let path = Path::new(&path);
-
+/// Move a file or directory to trash (sync implementation)
+fn delete_to_trash_sync(path: &Path) -> Result<(), DeleteError> {
     if !path.exists() {
         return Err(DeleteError::NotFound {
             path: path.to_string_lossy().to_string(),
@@ -336,11 +361,20 @@ pub async fn delete_to_trash(path: String) -> Result<(), DeleteError> {
     Ok(())
 }
 
-/// Create a new directory
+/// Move a file or directory to trash (safe delete)
 #[tauri::command]
-pub async fn create_directory(path: String) -> Result<(), String> {
-    let path = Path::new(&path);
+pub async fn delete_to_trash(path: String) -> Result<(), DeleteError> {
+    let path_buf = PathBuf::from(&path);
 
+    tokio::task::spawn_blocking(move || delete_to_trash_sync(&path_buf))
+        .await
+        .map_err(|e| DeleteError::IoError {
+            message: format!("Task failed: {}", e),
+        })?
+}
+
+/// Create a new directory (sync implementation)
+fn create_directory_sync(path: &Path) -> Result<(), String> {
     if path.exists() {
         return Err(format!("Path already exists: {:?}", path));
     }
@@ -353,11 +387,18 @@ pub async fn create_directory(path: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Create a new empty file
+/// Create a new directory
 #[tauri::command]
-pub async fn create_file(path: String) -> Result<(), String> {
-    let path = Path::new(&path);
+pub async fn create_directory(path: String) -> Result<(), String> {
+    let path_buf = PathBuf::from(&path);
 
+    tokio::task::spawn_blocking(move || create_directory_sync(&path_buf))
+        .await
+        .map_err(|e| format!("Task failed: {}", e))?
+}
+
+/// Create a new empty file (sync implementation)
+fn create_file_sync(path: &Path) -> Result<(), String> {
     if path.exists() {
         return Err(format!("Path already exists: {:?}", path));
     }
@@ -377,12 +418,18 @@ pub async fn create_file(path: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Move a file or directory
+/// Create a new empty file
 #[tauri::command]
-pub async fn move_file(source: String, destination: String) -> Result<(), String> {
-    let src = Path::new(&source);
-    let dst = Path::new(&destination);
+pub async fn create_file(path: String) -> Result<(), String> {
+    let path_buf = PathBuf::from(&path);
 
+    tokio::task::spawn_blocking(move || create_file_sync(&path_buf))
+        .await
+        .map_err(|e| format!("Task failed: {}", e))?
+}
+
+/// Move a file or directory (sync implementation)
+fn move_file_sync(src: &Path, dst: &Path) -> Result<(), String> {
     if !src.exists() {
         return Err(format!("Source does not exist: {:?}", src));
     }
@@ -421,12 +468,19 @@ pub async fn move_file(source: String, destination: String) -> Result<(), String
     Ok(())
 }
 
-/// Copy a file
+/// Move a file or directory
 #[tauri::command]
-pub async fn copy_file(source: String, destination: String) -> Result<(), String> {
-    let src = Path::new(&source);
-    let dst = Path::new(&destination);
+pub async fn move_file(source: String, destination: String) -> Result<(), String> {
+    let src = PathBuf::from(&source);
+    let dst = PathBuf::from(&destination);
 
+    tokio::task::spawn_blocking(move || move_file_sync(&src, &dst))
+        .await
+        .map_err(|e| format!("Task failed: {}", e))?
+}
+
+/// Copy a file (sync implementation)
+fn copy_file_sync(src: &Path, dst: &Path) -> Result<(), String> {
     if !src.exists() {
         return Err(format!("Source does not exist: {:?}", src));
     }
@@ -438,6 +492,17 @@ pub async fn copy_file(source: String, destination: String) -> Result<(), String
     }
 
     Ok(())
+}
+
+/// Copy a file
+#[tauri::command]
+pub async fn copy_file(source: String, destination: String) -> Result<(), String> {
+    let src = PathBuf::from(&source);
+    let dst = PathBuf::from(&destination);
+
+    tokio::task::spawn_blocking(move || copy_file_sync(&src, &dst))
+        .await
+        .map_err(|e| format!("Task failed: {}", e))?
 }
 
 /// Get the user's home directory
@@ -503,39 +568,30 @@ pub async fn open_file(path: String) -> Result<(), String> {
         .map_err(|e| format!("Failed to open file: {}", e))
 }
 
-/// Validate a drag-drop operation without executing it.
-/// Returns Ok(()) if valid, or specific DragDropError if invalid.
-#[tauri::command]
-pub async fn validate_drag_drop(
-    sources: Vec<String>,
-    target: String,
-) -> Result<(), DragDropError> {
-    let target_path = Path::new(&target);
-
+/// Validate a drag-drop operation (sync implementation)
+fn validate_drag_drop_sync(sources: &[PathBuf], target: &Path) -> Result<(), DragDropError> {
     // Target must exist
-    if !target_path.exists() {
+    if !target.exists() {
         return Err(DragDropError::SourceNotFound {
-            path: target.clone(),
+            path: target.to_string_lossy().to_string(),
         });
     }
 
     // Target must be a directory
-    if !target_path.is_dir() {
+    if !target.is_dir() {
         return Err(DragDropError::TargetNotDirectory {
-            path: target.clone(),
+            path: target.to_string_lossy().to_string(),
         });
     }
 
     // Convert to Path references
-    let source_paths: Vec<std::path::PathBuf> =
-        sources.iter().map(std::path::PathBuf::from).collect();
-    let source_refs: Vec<&Path> = source_paths.iter().map(|p| p.as_path()).collect();
+    let source_refs: Vec<&Path> = sources.iter().map(|p| p.as_path()).collect();
 
     // Check for cycles
-    cycle_detection::validate_multi_drop(&source_refs, target_path)?;
+    cycle_detection::validate_multi_drop(&source_refs, target)?;
 
     // Check each source
-    for source_path in &source_paths {
+    for source_path in sources {
         // Source must exist
         if !source_path.exists() {
             return Err(DragDropError::SourceNotFound {
@@ -552,11 +608,11 @@ pub async fn validate_drag_drop(
 
         // Check for name collision at destination
         if let Some(name) = source_path.file_name() {
-            let destination = target_path.join(name);
+            let destination = target.join(name);
             if destination.exists() {
                 return Err(DragDropError::NameCollision {
                     name: name.to_string_lossy().to_string(),
-                    destination: target.clone(),
+                    destination: target.to_string_lossy().to_string(),
                 });
             }
         }
@@ -565,26 +621,36 @@ pub async fn validate_drag_drop(
     Ok(())
 }
 
-/// Execute multiple move operations (batch move for drag-drop).
-/// Returns the new paths of the moved items.
+/// Validate a drag-drop operation without executing it.
+/// Returns Ok(()) if valid, or specific DragDropError if invalid.
 #[tauri::command]
-pub async fn move_files_batch(
+pub async fn validate_drag_drop(
     sources: Vec<String>,
-    target_directory: String,
-) -> Result<Vec<String>, DragDropError> {
-    // Validate first
-    validate_drag_drop(sources.clone(), target_directory.clone()).await?;
+    target: String,
+) -> Result<(), DragDropError> {
+    let source_paths: Vec<PathBuf> = sources.iter().map(PathBuf::from).collect();
+    let target_path = PathBuf::from(&target);
 
-    let target_path = Path::new(&target_directory);
+    tokio::task::spawn_blocking(move || validate_drag_drop_sync(&source_paths, &target_path))
+        .await
+        .map_err(|e| DragDropError::IoError {
+            message: format!("Task failed: {}", e),
+        })?
+}
+
+/// Execute multiple move operations (sync implementation)
+fn move_files_batch_sync(sources: &[PathBuf], target: &Path) -> Result<Vec<String>, DragDropError> {
+    // Validate first
+    validate_drag_drop_sync(sources, target)?;
+
     let mut new_paths = Vec::new();
 
-    for source in &sources {
-        let src_path = Path::new(source);
+    for src_path in sources {
         let file_name = src_path.file_name().ok_or_else(|| DragDropError::IoError {
-            message: format!("Invalid source path: {}", source),
+            message: format!("Invalid source path: {}", src_path.display()),
         })?;
 
-        let dst_path = target_path.join(file_name);
+        let dst_path = target.join(file_name);
 
         // Try rename first (same filesystem), fall back to copy+delete
         if std::fs::rename(src_path, &dst_path).is_err() {
@@ -611,26 +677,36 @@ pub async fn move_files_batch(
     Ok(new_paths)
 }
 
-/// Execute multiple copy operations (batch copy for drag-drop with Option key).
-/// Returns the new paths of the copied items.
+/// Execute multiple move operations (batch move for drag-drop).
+/// Returns the new paths of the moved items.
 #[tauri::command]
-pub async fn copy_files_batch(
+pub async fn move_files_batch(
     sources: Vec<String>,
     target_directory: String,
 ) -> Result<Vec<String>, DragDropError> {
-    // Validate first (same validation as move)
-    validate_drag_drop(sources.clone(), target_directory.clone()).await?;
+    let source_paths: Vec<PathBuf> = sources.iter().map(PathBuf::from).collect();
+    let target_path = PathBuf::from(&target_directory);
 
-    let target_path = Path::new(&target_directory);
+    tokio::task::spawn_blocking(move || move_files_batch_sync(&source_paths, &target_path))
+        .await
+        .map_err(|e| DragDropError::IoError {
+            message: format!("Task failed: {}", e),
+        })?
+}
+
+/// Execute multiple copy operations (sync implementation)
+fn copy_files_batch_sync(sources: &[PathBuf], target: &Path) -> Result<Vec<String>, DragDropError> {
+    // Validate first (same validation as move)
+    validate_drag_drop_sync(sources, target)?;
+
     let mut new_paths = Vec::new();
 
-    for source in &sources {
-        let src_path = Path::new(source);
+    for src_path in sources {
         let file_name = src_path.file_name().ok_or_else(|| DragDropError::IoError {
-            message: format!("Invalid source path: {}", source),
+            message: format!("Invalid source path: {}", src_path.display()),
         })?;
 
-        let dst_path = target_path.join(file_name);
+        let dst_path = target.join(file_name);
 
         if src_path.is_dir() {
             copy_dir_all(src_path, &dst_path).map_err(|e| DragDropError::IoError {
@@ -646,6 +722,23 @@ pub async fn copy_files_batch(
     }
 
     Ok(new_paths)
+}
+
+/// Execute multiple copy operations (batch copy for drag-drop with Option key).
+/// Returns the new paths of the copied items.
+#[tauri::command]
+pub async fn copy_files_batch(
+    sources: Vec<String>,
+    target_directory: String,
+) -> Result<Vec<String>, DragDropError> {
+    let source_paths: Vec<PathBuf> = sources.iter().map(PathBuf::from).collect();
+    let target_path = PathBuf::from(&target_directory);
+
+    tokio::task::spawn_blocking(move || copy_files_batch_sync(&source_paths, &target_path))
+        .await
+        .map_err(|e| DragDropError::IoError {
+            message: format!("Task failed: {}", e),
+        })?
 }
 
 /// Helper function to copy a directory recursively

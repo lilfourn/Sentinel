@@ -1019,6 +1019,10 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
             setTimeout(() => invoke('clear_organize_job').catch(console.error), 1000);
           }
 
+          // Invalidate VFS state after successful execution to prevent stale data
+          invoke('vfs_clear').catch(console.error);
+          useVfsStore.getState().reset();
+
           // Emit event for UsageSync to record in Convex
           emit('usage:record-organize', {
             folderPath: currentPlan.targetFolder,

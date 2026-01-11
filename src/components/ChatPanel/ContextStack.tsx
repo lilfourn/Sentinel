@@ -47,7 +47,10 @@ function ContextChip({ item, onRemove }: { item: ContextItem; onRemove: () => vo
 }
 
 export function ContextStack() {
-  const { activeContext, removeContext, clearContext } = useChatStore();
+  // Use individual selectors to prevent unnecessary re-renders
+  const activeContext = useChatStore((s) => s.activeContext);
+  const removeContext = useChatStore((s) => s.removeContext);
+  const clearContext = useChatStore((s) => s.clearContext);
 
   if (activeContext.length === 0) return null;
 
