@@ -14,7 +14,12 @@ permissions:
   contents: write
 
 jobs:
+  # Run CI tests before creating release
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   create-release:
+    needs: ci
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.create-release.outputs.result }}
@@ -142,9 +147,10 @@ jobs:
           # Frontend environment variables (embedded by Vite at build time)
           VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY }}
           VITE_CONVEX_URL: ${{ secrets.VITE_CONVEX_URL }}
-          VITE_OPENAI_API_KEY: ${{ secrets.VITE_OPENAI_API_KEY }}
-          # Backend API key (embedded by Rust at compile time via option_env!)
+          VITE_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Backend API keys (embedded by Rust at compile time via option_env!)
           CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}

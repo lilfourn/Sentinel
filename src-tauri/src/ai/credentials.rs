@@ -128,6 +128,29 @@ impl CredentialManager {
             return Err("CLAUDE_API_KEY not configured. Please contact support.".to_string());
         }
 
+        // For OpenAI: use the app-provided key embedded at compile time (free tier models)
+        if provider == "openai" {
+            // First check compile-time embedded key (for production builds)
+            if let Some(key) = option_env!("OPENAI_API_KEY") {
+                if !key.is_empty() {
+                    #[cfg(debug_assertions)]
+                    eprintln!("[Credentials] Using compile-time embedded OPENAI_API_KEY");
+                    return Ok(key.to_string());
+                }
+            }
+
+            // Then check runtime env var (for development)
+            if let Ok(key) = std::env::var("OPENAI_API_KEY") {
+                if !key.is_empty() {
+                    #[cfg(debug_assertions)]
+                    eprintln!("[Credentials] Using runtime OPENAI_API_KEY env var");
+                    return Ok(key);
+                }
+            }
+
+            // Fall through to keychain check below
+        }
+
         // For other providers: use Keychain
         if let Ok(entry) = Entry::new(SERVICE_NAME, provider) {
             if let Ok(password) = entry.get_password() {

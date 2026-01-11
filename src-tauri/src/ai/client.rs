@@ -125,11 +125,13 @@ struct ApiResponse {
 }
 
 /// API error response
+#[allow(dead_code)]
 #[derive(Deserialize)]
 struct ApiError {
     error: ApiErrorDetail,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 struct ApiErrorDetail {
     message: String,

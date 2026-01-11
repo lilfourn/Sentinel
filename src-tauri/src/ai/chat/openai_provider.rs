@@ -121,11 +121,9 @@ pub async fn run_openai_chat_agent(
         });
     }
 
-    // Get API key
+    // Get API key (checks compile-time embedded key, runtime env, and keychain)
     let api_key = CredentialManager::get_api_key("openai")
-        .or_else(|_| std::env::var("OPENAI_API_KEY"))
-        .or_else(|_| std::env::var("VITE_OPENAI_API_KEY"))
-        .map_err(|_| "OpenAI API key not configured. Please set OPENAI_API_KEY.".to_string())?;
+        .map_err(|_| "OpenAI API key not configured. GPT models require an API key.".to_string())?;
 
     // Hydrate context
     let hydrated: HydratedContext = hydrate_context(context_items)?;

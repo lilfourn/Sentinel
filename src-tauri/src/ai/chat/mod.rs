@@ -16,6 +16,9 @@ pub mod tool_conversion;
 pub mod tools;
 pub mod tools_terminal;
 
+#[cfg(test)]
+mod tests;
+
 #[allow(unused_imports)]
 pub use agent::{run_chat_agent, ChatAgentResult, ConversationMessage, TokenUsage};
 #[allow(unused_imports)]
