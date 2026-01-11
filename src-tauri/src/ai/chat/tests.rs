@@ -9,7 +9,6 @@
 mod tests {
     use crate::ai::chat::tool_conversion::*;
     use crate::ai::chat::tools::*;
-    use serde_json::json;
 
     #[test]
     fn test_tools_to_openai_format() {

@@ -8,7 +8,9 @@
 //! On Linux: apt install libpdfium-dev
 //! On Windows: Download from https://github.com/nickelc/pdfium-binaries
 
-use image::{DynamicImage, ImageFormat, RgbaImage};
+#[cfg(not(feature = "pdfium"))]
+use image::{DynamicImage, RgbaImage};
+use image::ImageFormat;
 use std::io::Cursor;
 use std::path::Path;
 
@@ -47,7 +49,9 @@ impl PdfRenderer {
         // Try to load pdfium dynamically
         #[cfg(feature = "pdfium")]
         {
-            pdfium_render::prelude::Pdfium::default().is_ok()
+            // Pdfium::default() now returns Pdfium directly (not Result)
+            // If the feature is enabled, pdfium is available
+            true
         }
         #[cfg(not(feature = "pdfium"))]
         {
@@ -89,8 +93,7 @@ impl PdfRenderer {
     fn render_with_pdfium(path: &Path, page_index: usize) -> Result<Vec<u8>, String> {
         use pdfium_render::prelude::*;
 
-        let pdfium = Pdfium::default()
-            .map_err(|e| format!("Failed to initialize pdfium: {}", e))?;
+        let pdfium = Pdfium::default();
 
         let document = pdfium
             .load_pdf_from_file(path, None)
@@ -221,8 +224,7 @@ impl PdfRenderer {
         {
             use pdfium_render::prelude::*;
 
-            let pdfium = Pdfium::default()
-                .map_err(|e| format!("Failed to initialize pdfium: {}", e))?;
+            let pdfium = Pdfium::default();
 
             let document = pdfium
                 .load_pdf_from_file(path, None)
