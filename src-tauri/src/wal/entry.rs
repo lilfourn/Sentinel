@@ -9,10 +9,11 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 /// Status of a WAL entry
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WALStatus {
     /// Operation has been logged but not yet started
+    #[default]
     Pending,
     /// Operation is currently executing
     InProgress,
@@ -22,12 +23,6 @@ pub enum WALStatus {
     Failed,
     /// Operation was rolled back (undone)
     RolledBack,
-}
-
-impl Default for WALStatus {
-    fn default() -> Self {
-        WALStatus::Pending
-    }
 }
 
 /// Type of filesystem operation logged in the WAL

@@ -7,7 +7,7 @@ import { api } from "../../convex/_generated/api";
  * Event payload for chat completion
  */
 interface ChatCompletePayload {
-  model: "haiku" | "sonnet" | "opus";
+  model: "haiku" | "sonnet";
   extendedThinking: boolean;
 }
 

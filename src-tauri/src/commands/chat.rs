@@ -4,7 +4,9 @@
 //! - chat_stream: Run chat agent with streaming responses
 //! - list_files_for_mention: Get files for @ mention autocomplete
 
-use crate::ai::chat::{run_chat_agent, ChatAgentResult, ContextItem, ConversationMessage};
+use crate::ai::chat::{
+    run_chat_agent, run_openai_chat_agent, ChatAgentResult, ContextItem, ConversationMessage,
+};
 use crate::billing::{BillingState, LimitCheckResult};
 use crate::security::PathValidator;
 use serde::{Deserialize, Serialize};
@@ -86,13 +88,18 @@ pub async fn chat_stream(
     // Reset abort flag at start of new chat
     abort_flag.0.store(false, std::sync::atomic::Ordering::SeqCst);
 
-    // Map to Anthropic model aliases (or use full IDs)
-    let model_id = match request.model.as_str() {
-        "claude-haiku-4-5" => "claude-haiku-4-5",     // claude-haiku-4-5-20251001
-        "claude-sonnet-4-5" => "claude-sonnet-4-5",   // claude-sonnet-4-5-20250929
-        "claude-opus-4-5" => "claude-opus-4-5",       // claude-opus-4-5-20251101
-        _ => &request.model,
+    // Determine provider based on model prefix
+    let is_openai_model = request.model.starts_with("gpt-");
+
+    // GPT models don't support extended thinking - auto-disable
+    let actual_extended_thinking = if is_openai_model {
+        false
+    } else {
+        request.extended_thinking
     };
+
+    // Use model ID as-is (full model names like "gpt-5.2-2025-12-11")
+    let model_id = &request.model;
 
     // === BILLING: Check limits before API call ===
     if let Some(ref user_id) = request.user_id {
@@ -103,7 +110,7 @@ pub async fn chat_stream(
             &subscription,
             &usage,
             model_id,
-            request.extended_thinking,
+            actual_extended_thinking,
         );
 
         match limit_result {
@@ -138,17 +145,31 @@ pub async fn chat_stream(
     // Clone the abort flag Arc for passing to agent
     let abort_flag_arc = Some(Arc::clone(&abort_flag.0));
 
-    match run_chat_agent(
-        &app,
-        &request.message,
-        &request.context_items,
-        model_id,
-        &request.history,
-        request.extended_thinking,
-        abort_flag_arc,
-    )
-    .await
-    {
+    // Route to appropriate provider based on model
+    let result: Result<ChatAgentResult, String> = if is_openai_model {
+        run_openai_chat_agent(
+            &app,
+            &request.message,
+            &request.context_items,
+            model_id,
+            &request.history,
+            abort_flag_arc,
+        )
+        .await
+    } else {
+        run_chat_agent(
+            &app,
+            &request.message,
+            &request.context_items,
+            model_id,
+            &request.history,
+            actual_extended_thinking,
+            abort_flag_arc,
+        )
+        .await
+    };
+
+    match result {
         Ok(ChatAgentResult { response, usage }) => {
             info!(
                 input_tokens = usage.input_tokens,

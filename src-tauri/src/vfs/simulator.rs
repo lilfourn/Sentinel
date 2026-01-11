@@ -4,7 +4,7 @@
 //! the real filesystem. This enables validation and preview of changes
 //! before they are committed.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::graph::{ShadowVFS, VFSError};
 use super::node::FileNode;
@@ -162,7 +162,7 @@ pub fn apply_all_staged(vfs: &mut ShadowVFS) -> Result<(), Vec<VFSError>> {
 }
 
 /// Recursively update children paths when a parent is moved
-fn update_children_paths(vfs: &mut ShadowVFS, old_parent: &PathBuf, new_parent: &PathBuf) {
+fn update_children_paths(vfs: &mut ShadowVFS, old_parent: &Path, new_parent: &Path) {
     // Collect children that need updating
     let children_to_update: Vec<(PathBuf, PathBuf)> = vfs
         .iter()

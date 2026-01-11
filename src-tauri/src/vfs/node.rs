@@ -8,21 +8,16 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Type of node in the virtual filesystem
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VFSNodeType {
     /// Regular file
+    #[default]
     File,
     /// Directory containing other nodes
     Directory,
     /// Symbolic link to another path
     Symlink,
-}
-
-impl Default for VFSNodeType {
-    fn default() -> Self {
-        Self::File
-    }
 }
 
 /// Represents a single node in the virtual filesystem.

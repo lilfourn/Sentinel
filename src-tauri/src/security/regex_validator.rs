@@ -562,8 +562,7 @@ mod tests {
         let result = validate_regex_complexity(complex);
         // This might fail due to complexity or nested quantifiers
         // Either is acceptable - we just want it blocked
-        if result.is_err() {
-            let err = result.unwrap_err();
+        if let Err(err) = result {
             assert!(
                 matches!(err.kind, RegexValidationErrorKind::TooComplex | RegexValidationErrorKind::NestedQuantifiers | RegexValidationErrorKind::InvalidRegex),
                 "Expected TooComplex, NestedQuantifiers, or InvalidRegex, got {:?}",

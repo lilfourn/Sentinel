@@ -1,10 +1,22 @@
 use keyring::Entry;
+use once_cell::sync::Lazy;
+use std::sync::RwLock;
 #[cfg(debug_assertions)]
 use std::fs;
 #[cfg(debug_assertions)]
 use std::path::PathBuf;
 
 const SERVICE_NAME: &str = "com.sentinel.filemanager";
+
+/// Cached API keys to avoid repeated keychain/env lookups
+///
+/// API keys are looked up once per provider and cached in memory.
+/// This avoids the overhead of keychain access (~1-5ms) or env var
+/// lookup on every API request.
+///
+/// Cache is invalidated when store_api_key or delete_api_key is called.
+static API_KEY_CACHE: Lazy<RwLock<std::collections::HashMap<String, Option<String>>>> =
+    Lazy::new(|| RwLock::new(std::collections::HashMap::new()));
 
 /// Credential manager using macOS Keychain with file fallback for development
 pub struct CredentialManager;
@@ -21,6 +33,11 @@ impl CredentialManager {
 
     /// Store an API key using macOS Keychain (with file fallback in dev mode)
     pub fn store_api_key(provider: &str, api_key: &str) -> Result<(), String> {
+        // Invalidate cache for this provider
+        if let Ok(mut cache) = API_KEY_CACHE.write() {
+            cache.remove(provider);
+        }
+
         // Try keychain first (secure storage)
         match Entry::new(SERVICE_NAME, provider) {
             Ok(entry) => {
@@ -65,7 +82,29 @@ impl CredentialManager {
     }
 
     /// Get an API key - uses compile-time embedded key for Anthropic, Keychain for others
+    ///
+    /// Results are cached to avoid repeated keychain/env lookups.
     pub fn get_api_key(provider: &str) -> Result<String, String> {
+        // Check cache first (fast path)
+        if let Ok(cache) = API_KEY_CACHE.read() {
+            if let Some(cached) = cache.get(provider) {
+                return cached.clone().ok_or_else(|| "API key not found".to_string());
+            }
+        }
+
+        // Cache miss - perform lookup
+        let result = Self::get_api_key_uncached(provider);
+
+        // Update cache
+        if let Ok(mut cache) = API_KEY_CACHE.write() {
+            cache.insert(provider.to_string(), result.clone().ok());
+        }
+
+        result
+    }
+
+    /// Get an API key without caching (internal implementation)
+    fn get_api_key_uncached(provider: &str) -> Result<String, String> {
         // For Anthropic/Claude: use the app-provided key embedded at compile time
         if provider == "anthropic" {
             // First check compile-time embedded key (for production builds)
@@ -117,6 +156,11 @@ impl CredentialManager {
 
     /// Delete an API key from Keychain and file storage
     pub fn delete_api_key(provider: &str) -> Result<(), String> {
+        // Invalidate cache for this provider
+        if let Ok(mut cache) = API_KEY_CACHE.write() {
+            cache.remove(provider);
+        }
+
         // Delete from keychain
         if let Ok(entry) = Entry::new(SERVICE_NAME, provider) {
             let _ = entry.delete_credential();

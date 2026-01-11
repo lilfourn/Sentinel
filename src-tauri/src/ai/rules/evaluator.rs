@@ -103,6 +103,7 @@ impl VirtualFile {
     }
 
     /// Create a VirtualFile from raw data (for testing or VFS)
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: String,
         ext: Option<String>,
@@ -467,7 +468,7 @@ impl VectorIndex for crate::vector::VectorIndex {
     fn similarity(&self, file_path: &str, query: &str) -> Result<f32, RuleError> {
         let path = std::path::PathBuf::from(file_path);
         self.similarity(&path, query)
-            .map_err(|e| RuleError::new(e))
+            .map_err(RuleError::new)
     }
 }
 

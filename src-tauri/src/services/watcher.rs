@@ -28,22 +28,13 @@ pub(crate) struct FolderWatcher {
 }
 
 /// Watcher state - supports multiple folders
+#[derive(Default)]
 pub struct WatcherState {
     /// Map of folder path -> watcher
     pub(crate) watchers: HashMap<String, FolderWatcher>,
     /// Legacy single watcher path (for backwards compatibility)
     pub watching_path: Option<PathBuf>,
     pub enabled: bool,
-}
-
-impl Default for WatcherState {
-    fn default() -> Self {
-        Self {
-            watchers: HashMap::new(),
-            watching_path: None,
-            enabled: false,
-        }
-    }
 }
 
 /// Global watcher state

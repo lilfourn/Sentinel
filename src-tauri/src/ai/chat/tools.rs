@@ -14,7 +14,7 @@ use crate::security::{safe_regex, PathValidator};
 use regex::Regex;
 use serde_json::{json, Value};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Directories to skip during search (large caches, build outputs, etc.)
 const EXCLUDED_DIRS: &[&str] = &[
@@ -247,11 +247,11 @@ fn expand_query_to_patterns(query: &str) -> Vec<String> {
 
 /// Check if a directory name should be excluded from search
 fn should_exclude_dir(name: &str) -> bool {
-    EXCLUDED_DIRS.iter().any(|excluded| name == *excluded)
+    EXCLUDED_DIRS.contains(&name)
 }
 
 /// Check if a file has a document extension (for score boosting)
-fn is_document_extension(path: &PathBuf) -> bool {
+fn is_document_extension(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| DOC_EXTENSIONS.contains(&ext.to_lowercase().as_str()))
@@ -357,8 +357,9 @@ async fn execute_search_hybrid(input: &Value) -> ChatToolResult {
         expanded_patterns
     );
 
+    #[allow(clippy::too_many_arguments)]
     fn search_recursive(
-        dir: &PathBuf,
+        dir: &Path,
         tokens: &[String],
         expanded_patterns: &[String],
         glob_regex: &Option<Regex>,

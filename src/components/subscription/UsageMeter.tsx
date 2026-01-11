@@ -23,8 +23,14 @@ export function UsageMeter({ model, variant = 'compact', className = '' }: Usage
     case 'sonnet':
       current = usage.sonnetRequests;
       break;
-    case 'opus':
-      current = usage.opusRequests;
+    case 'gpt52':
+      current = usage.gpt52Requests;
+      break;
+    case 'gpt5mini':
+      current = usage.gpt5miniRequests;
+      break;
+    case 'gpt5nano':
+      current = usage.gpt5nanoRequests;
       break;
   }
 
@@ -86,7 +92,9 @@ export function UsageDashboard({ compact = false }: { compact?: boolean }) {
   const models: { key: ModelType; label: string }[] = [
     { key: 'haiku', label: 'Haiku' },
     { key: 'sonnet', label: 'Sonnet' },
-    { key: 'opus', label: 'Opus' },
+    { key: 'gpt52', label: 'GPT-5.2' },
+    { key: 'gpt5mini', label: 'GPT-5 Mini' },
+    { key: 'gpt5nano', label: 'GPT-5 Nano' },
   ];
 
   if (compact) {

@@ -222,7 +222,7 @@ pub async fn apply_rename(
     }
 
     // Use atomic rename - handles EEXIST race condition
-    match std::fs::rename(&old, &new_path) {
+    match std::fs::rename(old, &new_path) {
         Ok(()) => Ok(RenameResult {
             success: true,
             old_path,
@@ -273,7 +273,7 @@ pub async fn undo_rename(
     validate_filename(&original_name)?;
 
     // Use atomic rename
-    match std::fs::rename(&current, &original) {
+    match std::fs::rename(current, original) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             Err(format!("Original path already exists: {}", original_path))
@@ -796,7 +796,7 @@ pub async fn apply_batch_rename(
         };
         let new_path = parent.join(&item.new_name);
 
-        match std::fs::rename(&old, &new_path) {
+        match std::fs::rename(old, &new_path) {
             Ok(()) => {
                 results.push(RenameResult {
                     success: true,

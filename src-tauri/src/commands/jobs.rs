@@ -124,7 +124,7 @@ pub fn complete_job_operation(job_id: String, op_id: String, current_index: i32)
         .ok_or_else(|| format!("Job not found: {}", job_id))?;
 
     if job.job_id != job_id {
-        return Err(format!("Job ID mismatch"));
+        return Err("Job ID mismatch".to_string());
     }
 
     job.complete_operation(&op_id);
@@ -140,7 +140,7 @@ pub fn complete_organize_job(job_id: String) -> Result<(), String> {
         .ok_or_else(|| format!("Job not found: {}", job_id))?;
 
     if job.job_id != job_id {
-        return Err(format!("Job ID mismatch"));
+        return Err("Job ID mismatch".to_string());
     }
 
     job.mark_completed();
@@ -158,7 +158,7 @@ pub fn fail_organize_job(job_id: String, error: String) -> Result<(), String> {
         .ok_or_else(|| format!("Job not found: {}", job_id))?;
 
     if job.job_id != job_id {
-        return Err(format!("Job ID mismatch"));
+        return Err("Job ID mismatch".to_string());
     }
 
     job.mark_failed(&error);
@@ -191,7 +191,7 @@ pub fn resume_organize_job(job_id: String) -> Result<OrganizeJob, String> {
         .ok_or_else(|| format!("Job not found: {}", job_id))?;
 
     if job.job_id != job_id {
-        return Err(format!("Job ID mismatch"));
+        return Err("Job ID mismatch".to_string());
     }
 
     if job.status != JobStatus::Interrupted {

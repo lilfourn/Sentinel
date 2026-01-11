@@ -398,7 +398,7 @@ impl GrokOrganizer {
             let worker_count = calculate_worker_count(file_contents.len());
             let batch_size = 10; // 10 files per worker call for faster processing
 
-            let batch_count = (file_contents.len() + batch_size - 1) / batch_size;
+            let batch_count = file_contents.len().div_ceil(batch_size);
             progress_callback(AnalysisProgress {
                 phase: AnalysisPhase::AnalyzingContent,
                 current: 0,

@@ -539,7 +539,7 @@ impl CommandSandbox {
                     // Allow -type f/d but ignore it for now (we accept it but don't filter)
                     i += 2;
                 }
-                arg if !arg.starts_with('-') && path == PathBuf::from(".") => {
+                arg if !arg.starts_with('-') && path.as_os_str() == "." => {
                     path = PathBuf::from(arg);
                     i += 1;
                 }
@@ -566,7 +566,7 @@ impl CommandSandbox {
         let path = args
             .iter()
             .find(|a| !a.starts_with('-'))
-            .map(|a| PathBuf::from(a))
+            .map(PathBuf::from)
             .ok_or_else(|| CommandSandboxError {
                 message: "file requires a path argument".to_string(),
                 kind: CommandSandboxErrorKind::ParseError,
@@ -670,7 +670,7 @@ impl CommandSandbox {
         let path = args
             .iter()
             .find(|a| !a.starts_with('-'))
-            .map(|a| PathBuf::from(a))
+            .map(PathBuf::from)
             .ok_or_else(|| CommandSandboxError {
                 message: "cat requires a path argument".to_string(),
                 kind: CommandSandboxErrorKind::ParseError,
@@ -683,7 +683,7 @@ impl CommandSandbox {
         let path = args
             .iter()
             .find(|a| !a.starts_with('-'))
-            .map(|a| PathBuf::from(a))
+            .map(PathBuf::from)
             .ok_or_else(|| CommandSandboxError {
                 message: "less requires a path argument".to_string(),
                 kind: CommandSandboxErrorKind::ParseError,

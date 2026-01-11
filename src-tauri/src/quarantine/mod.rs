@@ -170,7 +170,7 @@ impl QuarantineManager {
     }
 
     /// Save metadata for a quarantined item
-    fn save_item_metadata(&self, quarantine_path: &PathBuf, item: &QuarantinedItem) -> Result<(), String> {
+    fn save_item_metadata(&self, quarantine_path: &Path, item: &QuarantinedItem) -> Result<(), String> {
         let metadata_path = quarantine_path.with_extension("quarantine.json");
         let json = serde_json::to_string_pretty(item)
             .map_err(|e| format!("Failed to serialize metadata: {}", e))?;
@@ -180,7 +180,7 @@ impl QuarantineManager {
     }
 
     /// Load metadata for a quarantined item
-    fn load_item_metadata(&self, quarantine_path: &PathBuf) -> Option<QuarantinedItem> {
+    fn load_item_metadata(&self, quarantine_path: &Path) -> Option<QuarantinedItem> {
         let metadata_path = quarantine_path.with_extension("quarantine.json");
         if metadata_path.exists() {
             fs::read_to_string(&metadata_path)

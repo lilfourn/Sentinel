@@ -243,13 +243,11 @@ pub fn clear_cache() -> Result<u64, String> {
     }
 
     let mut count = 0u64;
-    for entry in fs::read_dir(&cache_dir).map_err(|e| format!("Failed to read cache dir: {}", e))? {
-        if let Ok(entry) = entry {
-            if entry.path().extension().map(|e| e == "webp" || e == "png").unwrap_or(false) {
-                if fs::remove_file(entry.path()).is_ok() {
-                    count += 1;
-                }
-            }
+    for entry in fs::read_dir(&cache_dir).map_err(|e| format!("Failed to read cache dir: {}", e))?.flatten() {
+        if entry.path().extension().map(|e| e == "webp" || e == "png").unwrap_or(false)
+            && fs::remove_file(entry.path()).is_ok()
+        {
+            count += 1;
         }
     }
 
@@ -271,13 +269,11 @@ pub fn get_cache_stats() -> Result<CacheStats, String> {
     let mut file_count = 0u64;
     let mut total_size = 0u64;
 
-    for entry in fs::read_dir(&cache_dir).map_err(|e| format!("Failed to read cache dir: {}", e))? {
-        if let Ok(entry) = entry {
-            if let Ok(metadata) = entry.metadata() {
-                if metadata.is_file() {
-                    file_count += 1;
-                    total_size += metadata.len();
-                }
+    for entry in fs::read_dir(&cache_dir).map_err(|e| format!("Failed to read cache dir: {}", e))?.flatten() {
+        if let Ok(metadata) = entry.metadata() {
+            if metadata.is_file() {
+                file_count += 1;
+                total_size += metadata.len();
             }
         }
     }

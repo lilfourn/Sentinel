@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sentinel - Desktop Authentication</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      background-color: #1E1E1E;
+      min-height: 100vh;
+      display: flex;
+      color: #ffffff;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    /* Split layout container */
+    .layout {
+      display: grid;
+      grid-template-columns: 1fr;
+      width: 100%;
+      min-height: 100vh;
+    }
+
+    @media (min-width: 1024px) {
+      .layout {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+
+    /* Left Panel - Auth Form */
+    .auth-panel {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+
+    .auth-panel::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse 80% 60% at 50% 50%, rgba(249, 148, 59, 0.03) 0%, transparent 50%);
+      pointer-events: none;
+    }
+
+    .auth-content {
+      position: relative;
+      z-index: 10;
+      width: 100%;
+      max-width: 400px;
+    }
+
+    /* Mobile logo */
+    .mobile-logo {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 2.5rem;
+    }
+
+    @media (min-width: 1024px) {
+      .mobile-logo {
+        display: none;
+      }
+    }
+
+    .mobile-logo img {
+      width: 40px;
+      height: 40px;
+    }
+
+    .mobile-logo h1 {
+      font-size: 1.125rem;
+      font-weight: 600;
+      color: #ffffff;
+      margin: 0;
+    }
+
+    .mobile-logo p {
+      font-size: 10px;
+      color: #71717a;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      margin: 0;
+    }
+
+    /* Clerk auth container */
+    #clerk-auth {
+      min-height: 300px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* Loading state */
+    .loading {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1rem;
+      padding: 2rem;
+    }
+
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid rgba(255, 255, 255, 0.1);
+      border-top-color: #f9943b;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .loading span {
+      font-size: 11px;
+      color: #71717a;
+      text-transform: uppercase;
+      letter-spacing: 0.2em;
+      font-weight: 500;
+    }
+
+    /* Success message */
+    .success-message {
+      background: rgba(34, 197, 94, 0.1);
+      border: 1px solid rgba(34, 197, 94, 0.2);
+      border-radius: 0.75rem;
+      padding: 1.5rem;
+      text-align: center;
+    }
+
+    .success-message h2 {
+      color: #22c55e;
+      font-size: 1.125rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .success-message p {
+      color: #a1a1aa;
+      font-size: 0.875rem;
+      margin: 0;
+    }
+
+    .manual-redirect {
+      margin-top: 1.5rem;
+    }
+
+    .manual-redirect a {
+      color: #f9943b;
+      text-decoration: none;
+      font-weight: 500;
+      transition: color 0.2s;
+    }
+
+    .manual-redirect a:hover {
+      color: #ffa54d;
+    }
+
+    /* Error message */
+    .error-message {
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+      border-radius: 0.75rem;
+      padding: 1.5rem;
+      text-align: center;
+    }
+
+    .error-message h2 {
+      color: #ef4444;
+      font-size: 1.125rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .error-message p {
+      color: #a1a1aa;
+      font-size: 0.875rem;
+      margin: 0;
+    }
+
+    /* Footer */
+    .footer {
+      margin-top: 2rem;
+      text-align: center;
+      color: #52525b;
+      font-size: 0.75rem;
+    }
+
+    .footer a {
+      color: #71717a;
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+
+    .footer a:hover {
+      color: #a1a1aa;
+    }
+
+    /* Right Panel - Branding */
+    .branding-panel {
+      display: none;
+      position: relative;
+      overflow: hidden;
+      background: #161616;
+    }
+
+    @media (min-width: 1024px) {
+      .branding-panel {
+        display: flex;
+      }
+    }
+
+    .branding-panel::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 100% 100% at 100% 0%, rgba(249, 148, 59, 0.08) 0%, transparent 50%),
+        radial-gradient(ellipse 80% 80% at 0% 100%, rgba(249, 148, 59, 0.05) 0%, transparent 50%);
+      pointer-events: none;
+    }
+
+    .branding-panel::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      opacity: 0.03;
+      background-image:
+        linear-gradient(rgba(255,255,255,0.5) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px);
+      background-size: 60px 60px;
+      pointer-events: none;
+    }
+
+    .branding-content {
+      position: relative;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      width: 100%;
+      padding: 3rem;
+    }
+
+    @media (min-width: 1280px) {
+      .branding-content {
+        padding: 4rem;
+      }
+    }
+
+    /* Logo section */
+    .logo-section {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .logo-section img {
+      width: 48px;
+      height: 48px;
+    }
+
+    .logo-section h1 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: #ffffff;
+      letter-spacing: -0.02em;
+      margin: 0;
+    }
+
+    .logo-section p {
+      font-size: 10px;
+      color: #71717a;
+      text-transform: uppercase;
+      letter-spacing: 0.2em;
+      font-weight: 500;
+      margin: 0;
+    }
+
+    /* Messaging section */
+    .messaging {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 3rem 0;
+    }
+
+    .messaging h2 {
+      font-size: 42px;
+      font-weight: 700;
+      color: #ffffff;
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+      margin-bottom: 1.5rem;
+    }
+
+    @media (min-width: 1280px) {
+      .messaging h2 {
+        font-size: 48px;
+      }
+    }
+
+    .messaging h2 .highlight {
+      color: #f9943b;
+    }
+
+    .messaging > p {
+      font-size: 1rem;
+      color: #a1a1aa;
+      line-height: 1.6;
+      max-width: 400px;
+      margin: 0;
+    }
+
+    /* Features */
+    .features {
+      margin-top: 2.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .feature-item {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      color: #a1a1aa;
+    }
+
+    .feature-icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 0.5rem;
+      background: rgba(249, 148, 59, 0.1);
+      color: #f9943b;
+    }
+
+    .feature-icon svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    .feature-item span {
+      font-size: 0.875rem;
+    }
+
+    /* Footer decorative */
+    .branding-footer {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      color: #52525b;
+    }
+
+    .branding-footer::before {
+      content: '';
+      width: 32px;
+      height: 1px;
+      background: #3f3f46;
+    }
+
+    .branding-footer span {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.2em;
+    }
+
+    /* Decorative elements */
+    .decorative-glow {
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 500px;
+      height: 500px;
+      pointer-events: none;
+    }
+
+    .decorative-glow::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 300px;
+      height: 300px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(249, 148, 59, 0.1) 0%, transparent 70%);
+      filter: blur(60px);
+    }
+
+    .corner-accent {
+      position: absolute;
+      bottom: 0;
+      right: 0;
+      width: 256px;
+      height: 256px;
+      pointer-events: none;
+    }
+
+    .corner-accent::before {
+      content: '';
+      position: absolute;
+      bottom: 32px;
+      right: 32px;
+      width: 128px;
+      height: 1px;
+      background: linear-gradient(to left, rgba(249, 148, 59, 0.2), transparent);
+    }
+
+    .corner-accent::after {
+      content: '';
+      position: absolute;
+      bottom: 32px;
+      right: 32px;
+      width: 1px;
+      height: 128px;
+      background: linear-gradient(to top, rgba(249, 148, 59, 0.2), transparent);
+    }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <!-- Left Panel - Auth Form -->
+    <div class="auth-panel">
+      <div class="auth-content">
+        <!-- Mobile logo (only shows on mobile) -->
+        <div class="mobile-logo">
+          <img src="/sentinal-logo.svg" alt="Sentinel" />
+          <div>
+            <h1>Sentinel</h1>
+            <p>File System</p>
+          </div>
+        </div>
+
+        <!-- Loading state (shown before Clerk loads) -->
+        <div id="loading-state" class="loading">
+          <div class="spinner"></div>
+          <span>Loading authentication</span>
+        </div>
+
+        <!-- Clerk auth container - Clerk renders its own card/form here -->
+        <div id="clerk-auth"></div>
+
+        <!-- Success state -->
+        <div id="success-state" class="success-message hidden">
+          <h2>Authentication Successful</h2>
+          <p>Redirecting you back to Sentinel...</p>
+          <div class="manual-redirect">
+            <p>If you're not redirected automatically, <a href="#" id="manual-link">click here</a></p>
+          </div>
+        </div>
+
+        <!-- Error state -->
+        <div id="error-state" class="error-message hidden">
+          <h2>Authentication Failed</h2>
+          <p id="error-message">An unexpected error occurred. Please try again.</p>
+        </div>
+
+        <div class="footer">
+          <p>By signing in, you agree to our <a href="https://app-sentinel.dev/terms">Terms</a> and <a href="https://app-sentinel.dev/privacy">Privacy Policy</a></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Panel - Branding -->
+    <div class="branding-panel">
+      <div class="branding-content">
+        <!-- Logo -->
+        <div class="logo-section">
+          <img src="/sentinal-logo.svg" alt="Sentinel" />
+          <div>
+            <h1>Sentinel</h1>
+            <p>AI-Powered File System</p>
+          </div>
+        </div>
+
+        <!-- Messaging -->
+        <div class="messaging">
+          <h2>
+            Your files,<br>
+            <span class="highlight">intelligently</span><br>
+            organized.
+          </h2>
+          <p>
+            Let AI handle the chaos. Sentinel automatically organizes, renames,
+            and structures your files so you can focus on what matters.
+          </p>
+
+          <!-- Features -->
+          <div class="features">
+            <div class="feature-item">
+              <div class="feature-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>
+                  <path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/>
+                </svg>
+              </div>
+              <span>AI-powered auto-organization</span>
+            </div>
+            <div class="feature-item">
+              <div class="feature-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M20 10a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1h-2.5a1 1 0 0 1-.8-.4l-.9-1.2A1 1 0 0 0 15 3h-2a1 1 0 0 0-.8.4L11.3 4.6a1 1 0 0 1-.8.4H4a1 1 0 0 0-1 1v3a1 1 0 0 0 1 1Z"/>
+                  <path d="M3 10a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h7"/><path d="M14 21h7a1 1 0 0 0 1-1v-9a1 1 0 0 0-1-1h-7"/><path d="M14 14v4"/><path d="M10 14v7"/>
+                </svg>
+              </div>
+              <span>Smart folder structures</span>
+            </div>
+            <div class="feature-item">
+              <div class="feature-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/>
+                </svg>
+              </div>
+              <span>Instant file renaming</span>
+            </div>
+            <div class="feature-item">
+              <div class="feature-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>
+                </svg>
+              </div>
+              <span>Secure local processing</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="branding-footer">
+          <span>Built for power users</span>
+        </div>
+      </div>
+
+      <!-- Decorative elements -->
+      <div class="decorative-glow"></div>
+      <div class="corner-accent"></div>
+    </div>
+  </div>
+
+  <!-- Clerk Frontend API -->
+  <script
+    async
+    crossorigin="anonymous"
+    data-clerk-publishable-key="pk_live_Y2xlcmsuYXBwLXNlbnRpbmVsLmRldiQ"
+    src="https://clerk.app-sentinel.dev/npm/@clerk/clerk-js@5/dist/clerk.browser.js"
+    type="text/javascript"
+  ></script>
+
+  <script>
+    // Configuration
+    const CONFIG = {
+      callbackScheme: 'sentinel',
+      tokenExpiryMs: 24 * 60 * 60 * 1000, // 24 hours
+    };
+
+    // DOM elements
+    const loadingState = document.getElementById('loading-state');
+    const clerkAuth = document.getElementById('clerk-auth');
+    const successState = document.getElementById('success-state');
+    const errorState = document.getElementById('error-state');
+    const errorMessage = document.getElementById('error-message');
+    const manualLink = document.getElementById('manual-link');
+
+    // Get URL parameters
+    const urlParams = new URLSearchParams(window.location.search);
+    const callbackUrl = urlParams.get('callback') || (CONFIG.callbackScheme + '://auth-callback');
+    const state = urlParams.get('state') || '';
+    const action = urlParams.get('action');
+
+    function showLoading(message) {
+      loadingState.classList.remove('hidden');
+      clerkAuth.classList.add('hidden');
+      successState.classList.add('hidden');
+      errorState.classList.add('hidden');
+      loadingState.querySelector('span').textContent = message;
+    }
+
+    function showClerkAuth() {
+      loadingState.classList.add('hidden');
+      clerkAuth.classList.remove('hidden');
+      successState.classList.add('hidden');
+      errorState.classList.add('hidden');
+    }
+
+    function showSuccess(redirectUrl) {
+      loadingState.classList.add('hidden');
+      clerkAuth.classList.add('hidden');
+      successState.classList.remove('hidden');
+      errorState.classList.add('hidden');
+      manualLink.href = redirectUrl;
+    }
+
+    function showError(message) {
+      loadingState.classList.add('hidden');
+      clerkAuth.classList.add('hidden');
+      successState.classList.add('hidden');
+      errorState.classList.remove('hidden');
+      errorMessage.textContent = message;
+    }
+
+    function buildCallbackUrl(params) {
+      const url = new URL(callbackUrl);
+      for (const [key, value] of Object.entries(params)) {
+        if (value) {
+          url.searchParams.set(key, String(value));
+        }
+      }
+      return url.toString();
+    }
+
+    function redirectToApp(params) {
+      const redirectUrl = buildCallbackUrl(params);
+      console.log('Redirecting to:', redirectUrl);
+      showSuccess(redirectUrl);
+      window.location.href = redirectUrl;
+
+      // Highlight manual link if redirect doesn't work
+      setTimeout(function() {
+        manualLink.style.color = '#22c55e';
+        manualLink.style.fontWeight = 'bold';
+      }, 2000);
+    }
+
+    async function handleSignedIn(clerk) {
+      showLoading('Completing authentication');
+
+      try {
+        const token = await clerk.session.getToken();
+        if (!token) {
+          throw new Error('Failed to get session token');
+        }
+
+        const user = clerk.user;
+        const params = {
+          token: token,
+          userId: user.id,
+          email: user.primaryEmailAddress ? user.primaryEmailAddress.emailAddress : '',
+          firstName: user.firstName || '',
+          lastName: user.lastName || '',
+          imageUrl: user.imageUrl || '',
+          expiresAt: Date.now() + CONFIG.tokenExpiryMs,
+          state: state,
+        };
+
+        redirectToApp(params);
+      } catch (error) {
+        console.error('Authentication error:', error);
+        showError(error.message || 'An unexpected error occurred. Please try again.');
+      }
+    }
+
+    // Clerk appearance configuration - matches Sentinel app exactly
+    const clerkAppearance = {
+      layout: {
+        socialButtonsPlacement: 'bottom',
+        socialButtonsVariant: 'blockButton',
+        showOptionalFields: false,
+      },
+      variables: {
+        colorPrimary: '#f9943b',
+        colorBackground: '#252525',
+        colorText: '#ffffff',
+        colorTextSecondary: '#a1a1aa',
+        colorInputText: '#ffffff',
+        colorInputBackground: '#1a1a1a',
+        colorDanger: '#ef4444',
+        borderRadius: '10px',
+        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+      },
+      elements: {
+        rootBox: {
+          width: '100%',
+        },
+        card: {
+          backgroundColor: '#252525',
+          border: '1px solid rgba(255, 255, 255, 0.06)',
+          borderRadius: '1rem',
+          padding: '2rem',
+          boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+        },
+
+        // Header - let Clerk show its own header
+        headerTitle: {
+          color: '#ffffff',
+          fontSize: '1.5rem',
+          fontWeight: '600',
+        },
+        headerSubtitle: {
+          color: '#a1a1aa',
+          fontSize: '0.875rem',
+        },
+
+        main: 'gap-5',
+        form: 'gap-5',
+        formFieldRow: 'gap-5',
+
+        // Labels
+        formFieldLabel: {
+          color: '#d4d4d8',
+          fontSize: '12px',
+          textTransform: 'uppercase',
+          letterSpacing: '0.1em',
+          fontWeight: '600',
+          marginBottom: '8px',
+        },
+
+        // Inputs
+        formFieldInput: {
+          backgroundColor: '#1a1a1a',
+          border: '1px solid #3f3f46',
+          color: '#ffffff',
+          borderRadius: '8px',
+          height: '48px',
+          padding: '0 16px',
+          fontSize: '14px',
+          transition: 'all 0.2s',
+        },
+        formFieldInputShowPasswordButton: {
+          color: '#a1a1aa',
+        },
+        formFieldErrorText: {
+          color: '#f87171',
+          fontSize: '12px',
+          marginTop: '8px',
+          fontWeight: '500',
+        },
+        formFieldSuccessText: {
+          color: '#4ade80',
+          fontSize: '12px',
+          marginTop: '8px',
+          fontWeight: '500',
+        },
+
+        // Primary button
+        formButtonPrimary: {
+          backgroundColor: '#f9943b',
+          color: '#ffffff',
+          fontWeight: '600',
+          fontSize: '14px',
+          height: '48px',
+          borderRadius: '8px',
+          boxShadow: '0 10px 15px -3px rgba(249, 148, 59, 0.2)',
+          border: '0',
+          transition: 'all 0.2s',
+        },
+
+        // Social buttons
+        socialButtons: {
+          gap: '12px',
+        },
+        socialButtonsBlockButton: {
+          backgroundColor: '#2a2a2a',
+          border: '1px solid #3f3f46',
+          color: '#ffffff',
+          fontWeight: '500',
+          fontSize: '14px',
+          height: '48px',
+          borderRadius: '8px',
+          transition: 'all 0.2s',
+        },
+        socialButtonsBlockButtonText: {
+          color: '#ffffff',
+          fontWeight: '500',
+        },
+        socialButtonsBlockButtonArrow: {
+          color: '#ffffff',
+        },
+
+        // Divider
+        dividerLine: {
+          backgroundColor: '#3f3f46',
+        },
+        dividerText: {
+          color: '#71717a',
+          fontSize: '11px',
+          textTransform: 'uppercase',
+          letterSpacing: '0.15em',
+          fontWeight: '500',
+          backgroundColor: '#252525',
+          padding: '0 16px',
+        },
+
+        // Footer
+        footer: {
+          backgroundColor: 'transparent',
+          paddingTop: '16px',
+        },
+        footerAction: {
+          backgroundColor: 'transparent',
+        },
+        footerActionText: {
+          color: '#a1a1aa',
+          fontSize: '13px',
+        },
+        footerActionLink: {
+          color: '#f9943b',
+          fontWeight: '600',
+          transition: 'color 0.2s',
+        },
+
+        // Alternative actions
+        formFieldAction: {
+          fontSize: '12px',
+        },
+        formFieldActionLink: {
+          color: '#f9943b',
+          fontWeight: '500',
+          transition: 'color 0.2s',
+        },
+
+        // Identity preview
+        identityPreview: {
+          backgroundColor: '#1a1a1a',
+          border: '1px solid #3f3f46',
+          borderRadius: '8px',
+          padding: '16px',
+        },
+        identityPreviewText: {
+          color: '#ffffff',
+          fontSize: '14px',
+        },
+        identityPreviewEditButton: {
+          color: '#f9943b',
+          fontSize: '13px',
+          fontWeight: '500',
+        },
+
+        // OTP input
+        otpCodeFieldInput: {
+          backgroundColor: '#1a1a1a',
+          border: '1px solid #3f3f46',
+          color: '#ffffff',
+          borderRadius: '8px',
+          fontSize: '18px',
+          fontFamily: 'monospace',
+        },
+
+        // Alerts
+        alert: {
+          backgroundColor: '#1a1a1a',
+          border: '1px solid #3f3f46',
+          borderRadius: '8px',
+          padding: '16px',
+        },
+        alertText: {
+          color: '#d4d4d8',
+          fontSize: '13px',
+        },
+
+        // Back button
+        backLink: {
+          color: '#a1a1aa',
+          fontSize: '13px',
+          fontWeight: '500',
+          transition: 'color 0.2s',
+        },
+
+        // Internal links
+        formHeaderTitle: {
+          color: '#ffffff',
+        },
+        formHeaderSubtitle: {
+          color: '#a1a1aa',
+        },
+      },
+    };
+
+    // Wait for Clerk to load
+    window.addEventListener('load', async function() {
+      // Wait for Clerk to be available
+      while (!window.Clerk) {
+        await new Promise(function(resolve) { setTimeout(resolve, 100); });
+      }
+
+      const clerk = window.Clerk;
+      await clerk.load();
+
+      // Handle sign-out action
+      if (action === 'sign-out') {
+        await clerk.signOut();
+        redirectToApp({ action: 'signed-out' });
+        return;
+      }
+
+      // Check if already signed in
+      if (clerk.user) {
+        console.log('User already signed in:', clerk.user.id);
+        await handleSignedIn(clerk);
+        return;
+      }
+
+      // Show Clerk sign-in
+      showClerkAuth();
+
+      clerk.mountSignIn(clerkAuth, {
+        appearance: clerkAppearance,
+      });
+
+      // Listen for sign-in completion
+      clerk.addListener(async function() {
+        if (clerk.user) {
+          console.log('Sign-in completed:', clerk.user.id);
+          await handleSignedIn(clerk);
+        }
+      });
+    });
+  </script>
+</body>
+</html>

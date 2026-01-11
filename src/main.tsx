@@ -9,6 +9,8 @@ import { useAuth } from "@clerk/clerk-react";
 import { AuthSync } from "./components/auth/AuthSync";
 import { UsageSync } from "./components/UsageSync";
 import { queryClient } from "./lib/query-client";
+import { DesktopAuthProvider, useDesktopAuth } from "./contexts/DesktopAuthContext";
+import { isTauriProduction } from "./lib/desktop-auth";
 import App from "./App";
 
 // Clerk publishable key
@@ -17,6 +19,9 @@ const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 // Convex client (only if URL is configured)
 const CONVEX_URL = import.meta.env.VITE_CONVEX_URL;
 const convex = CONVEX_URL ? new ConvexReactClient(CONVEX_URL) : null;
+
+// Check if we should use desktop auth (production Tauri build)
+const USE_DESKTOP_AUTH = isTauriProduction();
 
 // Clerk appearance config - matches app's glassmorphic dark theme
 const clerkAppearance = {
@@ -85,8 +90,8 @@ const clerkAppearance = {
   },
 };
 
-// Inner component that uses useAuth (must be inside ClerkProvider)
-function ConvexClientProvider({ children }: { children: React.ReactNode }) {
+// Convex provider for Clerk auth (development mode)
+function ConvexClientProviderWithClerk({ children }: { children: React.ReactNode }) {
   if (!convex) {
     return <>{children}</>;
   }
@@ -99,29 +104,106 @@ function ConvexClientProvider({ children }: { children: React.ReactNode }) {
   );
 }
 
+// Custom hook for desktop auth that matches Clerk's useAuth interface for Convex
+function useDesktopAuthForConvex() {
+  const { isLoaded, isSignedIn, getToken } = useDesktopAuth();
+
+  return {
+    isLoaded,
+    isSignedIn,
+    getToken: async (_options?: { template?: string; skipCache?: boolean }) => {
+      // Desktop auth doesn't support templates, return the stored token
+      return getToken();
+    },
+    orgId: undefined,
+    orgRole: undefined,
+  };
+}
+
+// Convex provider for desktop auth (production mode)
+function ConvexClientProviderWithDesktopAuth({ children }: { children: React.ReactNode }) {
+  if (!convex) {
+    return <>{children}</>;
+  }
+
+  return (
+    <ConvexProviderWithClerk client={convex} useAuth={useDesktopAuthForConvex}>
+      <UsageSync />
+      {children}
+    </ConvexProviderWithClerk>
+  );
+}
+
+// App with Clerk auth (development mode)
+function AppWithClerkAuth() {
+  return (
+    <ClerkProvider
+      publishableKey={PUBLISHABLE_KEY}
+      afterSignOutUrl="/"
+      appearance={clerkAppearance}
+      allowedRedirectOrigins={[
+        "http://localhost:1420",    // Development
+        "http://localhost:12753",   // Production desktop app (localhost plugin)
+      ]}
+    >
+      <QueryClientProvider client={queryClient}>
+        <ConvexClientProviderWithClerk>
+          <App />
+        </ConvexClientProviderWithClerk>
+      </QueryClientProvider>
+    </ClerkProvider>
+  );
+}
+
+// App with desktop auth (production Tauri mode)
+function AppWithDesktopAuth() {
+  return (
+    <DesktopAuthProvider>
+      <QueryClientProvider client={queryClient}>
+        <ConvexClientProviderWithDesktopAuth>
+          <App />
+        </ConvexClientProviderWithDesktopAuth>
+      </QueryClientProvider>
+    </DesktopAuthProvider>
+  );
+}
+
+// App without auth
+function AppWithoutAuth() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <App />
+    </QueryClientProvider>
+  );
+}
+
 // Main app with providers
 function Root() {
   // If Clerk is not configured, run without auth
   if (!PUBLISHABLE_KEY) {
-    console.info("Running without Clerk auth. Set VITE_CLERK_PUBLISHABLE_KEY to enable.");
+    console.info("Running without auth. Set VITE_CLERK_PUBLISHABLE_KEY to enable.");
     return (
       <StrictMode>
-        <QueryClientProvider client={queryClient}>
-          <App />
-        </QueryClientProvider>
+        <AppWithoutAuth />
       </StrictMode>
     );
   }
 
+  // Use desktop auth in production Tauri builds
+  if (USE_DESKTOP_AUTH) {
+    console.info("Using desktop auth (production Tauri build)");
+    return (
+      <StrictMode>
+        <AppWithDesktopAuth />
+      </StrictMode>
+    );
+  }
+
+  // Use Clerk auth in development
+  console.info("Using Clerk auth (development mode)");
   return (
     <StrictMode>
-      <ClerkProvider publishableKey={PUBLISHABLE_KEY} afterSignOutUrl="/" appearance={clerkAppearance}>
-        <QueryClientProvider client={queryClient}>
-          <ConvexClientProvider>
-            <App />
-          </ConvexClientProvider>
-        </QueryClientProvider>
-      </ClerkProvider>
+      <AppWithClerkAuth />
     </StrictMode>
   );
 }

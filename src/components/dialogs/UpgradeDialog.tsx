@@ -7,7 +7,7 @@ import { useSubscriptionStore, TIER_LIMITS, PRO_PRICE } from '../../stores/subsc
 interface UpgradeDialogProps {
   isOpen: boolean;
   onClose: () => void;
-  highlightFeature?: 'sonnet' | 'opus' | 'extendedThinking';
+  highlightFeature?: 'sonnet' | 'extendedThinking' | 'gpt52' | 'gpt5mini' | 'gpt5nano';
 }
 
 const features = [
@@ -15,11 +15,6 @@ const features = [
     id: 'sonnet',
     title: 'Sonnet 4.5',
     pro: `${TIER_LIMITS.pro.sonnet}/day`,
-  },
-  {
-    id: 'opus',
-    title: 'Opus 4.5',
-    pro: `${TIER_LIMITS.pro.opus}/day`,
   },
   {
     id: 'extendedThinking',
@@ -30,6 +25,21 @@ const features = [
     id: 'haiku',
     title: 'Haiku 4.5',
     pro: `${TIER_LIMITS.pro.haiku}/day`,
+  },
+  {
+    id: 'gpt52',
+    title: 'GPT-5.2',
+    pro: `${TIER_LIMITS.pro.gpt52}/day`,
+  },
+  {
+    id: 'gpt5mini',
+    title: 'GPT-5 Mini',
+    pro: `${TIER_LIMITS.pro.gpt5mini}/day`,
+  },
+  {
+    id: 'gpt5nano',
+    title: 'GPT-5 Nano',
+    pro: `${TIER_LIMITS.pro.gpt5nano}/day`,
   },
 ];
 

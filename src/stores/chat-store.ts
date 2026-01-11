@@ -51,7 +51,12 @@ export interface ChatMessage {
   isThinking?: boolean;
 }
 
-export type ChatModel = 'claude-haiku-4-5' | 'claude-sonnet-4-5' | 'claude-opus-4-5';
+export type ChatModel =
+  | 'claude-haiku-4-5'
+  | 'claude-sonnet-4-5'
+  | 'gpt-5.2-2025-12-11'
+  | 'gpt-5-mini-2025-08-07'
+  | 'gpt-5-nano-2025-08-07';
 export type ChatStatus = 'idle' | 'thinking' | 'streaming' | 'error';
 
 /** File/folder item for mention autocomplete */

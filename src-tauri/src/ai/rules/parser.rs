@@ -158,7 +158,7 @@ impl<'a> Lexer<'a> {
         if let Some(&'.') = self.peek() {
             // Look ahead to see if it's a decimal or method call
             let rest = &self.input[self.position..];
-            if rest.len() > 1 && rest.chars().nth(1).map_or(false, |c| c.is_ascii_digit()) {
+            if rest.len() > 1 && rest.chars().nth(1).is_some_and(|c| c.is_ascii_digit()) {
                 s.push(self.advance().unwrap()); // consume '.'
                 while let Some(&c) = self.peek() {
                     if c.is_ascii_digit() {

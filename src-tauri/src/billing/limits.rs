@@ -106,17 +106,17 @@ impl LimitEnforcer {
         }
 
         // Check extended thinking limit
-        if extended_thinking {
-            if usage.extended_thinking_requests >= limits.extended_thinking_requests {
-                return LimitCheckResult::Denied {
-                    reason: LimitDenialReason::DailyLimitExceeded {
-                        model: "Extended Thinking".to_string(),
-                        limit: limits.extended_thinking_requests,
-                        used: usage.extended_thinking_requests,
-                    },
-                    upgrade_url: None,
-                };
-            }
+        if extended_thinking
+            && usage.extended_thinking_requests >= limits.extended_thinking_requests
+        {
+            return LimitCheckResult::Denied {
+                reason: LimitDenialReason::DailyLimitExceeded {
+                    model: "Extended Thinking".to_string(),
+                    limit: limits.extended_thinking_requests,
+                    used: usage.extended_thinking_requests,
+                },
+                upgrade_url: None,
+            };
         }
 
         // All checks passed
@@ -295,8 +295,12 @@ impl LimitEnforcer {
             "Haiku".to_string()
         } else if model.contains("sonnet") {
             "Sonnet".to_string()
-        } else if model.contains("opus") {
-            "Opus".to_string()
+        } else if model.starts_with("gpt-5.2") {
+            "GPT-5.2".to_string()
+        } else if model.starts_with("gpt-5-mini") {
+            "GPT-5 Mini".to_string()
+        } else if model.starts_with("gpt-5-nano") {
+            "GPT-5 Nano".to_string()
         } else {
             model.to_string()
         }
@@ -343,6 +347,9 @@ mod tests {
             rename_requests: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
+            gpt52_requests: 0,
+            gpt5mini_requests: 0,
+            gpt5nano_requests: 0,
         }
     }
 
@@ -417,14 +424,9 @@ mod tests {
             .check_limit(&sub, &usage, "claude-sonnet-4-5", false)
             .is_allowed());
 
-        // Opus
+        // Extended thinking with sonnet
         assert!(enforcer
-            .check_limit(&sub, &usage, "claude-opus-4-5", false)
-            .is_allowed());
-
-        // Extended thinking
-        assert!(enforcer
-            .check_limit(&sub, &usage, "claude-opus-4-5", true)
+            .check_limit(&sub, &usage, "claude-sonnet-4-5", true)
             .is_allowed());
     }
 
@@ -438,9 +440,9 @@ mod tests {
         let result = enforcer.check_limit(&sub, &usage, "claude-sonnet-4-5", false);
         assert!(!result.is_allowed());
 
-        // Opus at limit
-        let usage = make_usage(0, 0, 10, 0);
-        let result = enforcer.check_limit(&sub, &usage, "claude-opus-4-5", false);
+        // Haiku at limit
+        let usage = make_usage(300, 0, 0, 0);
+        let result = enforcer.check_limit(&sub, &usage, "claude-haiku-4-5", false);
         assert!(!result.is_allowed());
     }
 }

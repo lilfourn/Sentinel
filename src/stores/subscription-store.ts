@@ -56,14 +56,20 @@ export const TIER_LIMITS = {
   free: {
     haiku: 100,
     sonnet: 0,
-    opus: 0,
     extendedThinking: 0,
+    // GPT models
+    gpt52: 0,      // Pro only
+    gpt5mini: 50,  // Mid-tier GPT
+    gpt5nano: 100, // Budget GPT
   },
   pro: {
     haiku: 300,
     sonnet: 50,
-    opus: 10,
     extendedThinking: 5,
+    // GPT models
+    gpt52: 30,      // Most capable GPT
+    gpt5mini: 200,  // Mid-tier GPT
+    gpt5nano: 500,  // Budget GPT
   },
 } as const;
 
@@ -76,23 +82,29 @@ export const PRO_PRICE = 19.99;
 
 export type SubscriptionTier = 'free' | 'pro';
 export type SubscriptionStatus = 'active' | 'past_due' | 'canceled' | 'incomplete' | 'trialing';
-export type ModelType = 'haiku' | 'sonnet' | 'opus';
+export type ModelType = 'haiku' | 'sonnet' | 'gpt52' | 'gpt5mini' | 'gpt5nano';
 
 export interface DailyUsage {
   date: string;
   haikuRequests: number;
   sonnetRequests: number;
-  opusRequests: number;
   extendedThinkingRequests: number;
   totalInputTokens: number;
   totalOutputTokens: number;
+  // GPT models
+  gpt52Requests: number;
+  gpt5miniRequests: number;
+  gpt5nanoRequests: number;
 }
 
 export interface TierLimits {
   haiku: number;
   sonnet: number;
-  opus: number;
   extendedThinking: number;
+  // GPT models
+  gpt52: number;
+  gpt5mini: number;
+  gpt5nano: number;
 }
 
 export interface SubscriptionInfo {
@@ -172,10 +184,13 @@ const initialUsage: DailyUsage = {
   date: new Date().toISOString().split('T')[0],
   haikuRequests: 0,
   sonnetRequests: 0,
-  opusRequests: 0,
   extendedThinkingRequests: 0,
   totalInputTokens: 0,
   totalOutputTokens: 0,
+  // GPT models
+  gpt52Requests: 0,
+  gpt5miniRequests: 0,
+  gpt5nanoRequests: 0,
 };
 
 const initialState: SubscriptionState = {
@@ -280,8 +295,14 @@ export const useSubscriptionStore = create<SubscriptionStore>()(
             case 'sonnet':
               usage.sonnetRequests += 1;
               break;
-            case 'opus':
-              usage.opusRequests += 1;
+            case 'gpt52':
+              usage.gpt52Requests += 1;
+              break;
+            case 'gpt5mini':
+              usage.gpt5miniRequests += 1;
+              break;
+            case 'gpt5nano':
+              usage.gpt5nanoRequests += 1;
               break;
           }
 
@@ -321,8 +342,14 @@ export const useSubscriptionStore = create<SubscriptionStore>()(
           case 'sonnet':
             used = usage.sonnetRequests;
             break;
-          case 'opus':
-            used = usage.opusRequests;
+          case 'gpt52':
+            used = usage.gpt52Requests;
+            break;
+          case 'gpt5mini':
+            used = usage.gpt5miniRequests;
+            break;
+          case 'gpt5nano':
+            used = usage.gpt5nanoRequests;
             break;
         }
 
@@ -525,7 +552,9 @@ export const useSubscriptionStore = create<SubscriptionStore>()(
 export function chatModelToSubscriptionModel(chatModel: string): ModelType {
   if (chatModel.includes('haiku')) return 'haiku';
   if (chatModel.includes('sonnet')) return 'sonnet';
-  if (chatModel.includes('opus')) return 'opus';
+  if (chatModel.startsWith('gpt-5.2')) return 'gpt52';
+  if (chatModel.startsWith('gpt-5-mini')) return 'gpt5mini';
+  if (chatModel.startsWith('gpt-5-nano')) return 'gpt5nano';
   return 'haiku'; // Default
 }
 
@@ -538,8 +567,12 @@ export function getModelDisplayName(model: ModelType): string {
       return 'Haiku 4.5';
     case 'sonnet':
       return 'Sonnet 4.5';
-    case 'opus':
-      return 'Opus 4.5';
+    case 'gpt52':
+      return 'GPT-5.2';
+    case 'gpt5mini':
+      return 'GPT-5 Mini';
+    case 'gpt5nano':
+      return 'GPT-5 Nano';
   }
 }
 

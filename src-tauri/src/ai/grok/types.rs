@@ -222,7 +222,7 @@ pub fn sanitize_filename(name: &str, original_name: &str) -> String {
     // Limit length (leaving room for extension)
     let max_name_len = 75 - original_ext.len();
     let result = if result.len() > max_name_len {
-        &result[..max_name_len].trim_end_matches('-')
+        result[..max_name_len].trim_end_matches('-')
     } else {
         result
     };

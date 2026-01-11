@@ -5,7 +5,7 @@
 
 use super::{VectorConfig, VectorDocument, VectorIndex};
 use fastembed::{InitOptions, TextEmbedding};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Wrapper around fastembed's TextEmbedding model
@@ -80,7 +80,7 @@ impl VectorIndex {
     /// Ok(()) on success, Err(String) on failure
     pub fn index_node(
         &mut self,
-        path: &PathBuf,
+        path: &Path,
         name: &str,
         content_preview: Option<&str>,
     ) -> Result<(), String> {
@@ -97,7 +97,7 @@ impl VectorIndex {
         let tags = self.compute_tags(&embedding);
 
         let doc = VectorDocument {
-            path: path.clone(),
+            path: path.to_path_buf(),
             text,
             embedding,
             tags,
@@ -185,20 +185,58 @@ impl VectorIndex {
 /// Compute cosine similarity between two vectors
 ///
 /// Returns a value between -1.0 and 1.0, where 1.0 means identical direction
+///
+/// Optimized implementation that:
+/// 1. Computes all three values (dot, norm_a, norm_b) in a single pass
+/// 2. Uses SIMD-friendly loop pattern (the compiler auto-vectorizes this)
+/// 3. Combines the final sqrt operations
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }
 
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    // Single-pass computation of dot product and both norms
+    // This pattern is SIMD-friendly and the compiler can auto-vectorize it
+    let (dot, norm_a_sq, norm_b_sq) = a.iter().zip(b.iter()).fold(
+        (0.0f32, 0.0f32, 0.0f32),
+        |(dot, na, nb), (&x, &y)| (dot + x * y, na + x * x, nb + y * y),
+    );
 
-    if norm_a == 0.0 || norm_b == 0.0 {
+    // Fast path: avoid sqrt if either norm is zero
+    if norm_a_sq == 0.0 || norm_b_sq == 0.0 {
         return 0.0;
     }
 
-    dot / (norm_a * norm_b)
+    // Combined sqrt for both norms (slightly faster than two separate sqrts)
+    dot / (norm_a_sq * norm_b_sq).sqrt()
+}
+
+/// Compute cosine similarity when norm of vector `a` is pre-computed
+///
+/// This is useful when comparing one query vector against many documents,
+/// as we only compute the query norm once.
+#[allow(dead_code)]
+pub fn cosine_similarity_with_norm(a: &[f32], a_norm: f32, b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() || a_norm == 0.0 {
+        return 0.0;
+    }
+
+    let (dot, norm_b_sq) = a.iter().zip(b.iter()).fold(
+        (0.0f32, 0.0f32),
+        |(dot, nb), (&x, &y)| (dot + x * y, nb + y * y),
+    );
+
+    if norm_b_sq == 0.0 {
+        return 0.0;
+    }
+
+    dot / (a_norm * norm_b_sq.sqrt())
+}
+
+/// Compute the L2 norm of a vector
+#[allow(dead_code)]
+pub fn l2_norm(v: &[f32]) -> f32 {
+    v.iter().map(|x| x * x).sum::<f32>().sqrt()
 }
 
 #[cfg(test)]

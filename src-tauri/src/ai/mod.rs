@@ -2,6 +2,7 @@ pub mod chat;
 pub mod client;
 pub mod credentials;
 pub mod grok;
+pub mod http_client;
 pub mod prompts;
 pub mod rules;
 pub mod tools;

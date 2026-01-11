@@ -182,7 +182,7 @@ impl DocumentParser {
         );
 
         // Show first 200 chars for debugging
-        if text.len() > 0 {
+        if !text.is_empty() {
             let preview: String = text.chars().take(200).collect();
             tracing::debug!("[DocumentParser] Content preview: {}...", preview);
         }

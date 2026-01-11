@@ -4,17 +4,12 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 /// Subscription tier
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SubscriptionTier {
+    #[default]
     Free,
     Pro,
-}
-
-impl Default for SubscriptionTier {
-    fn default() -> Self {
-        Self::Free
-    }
 }
 
 impl std::fmt::Display for SubscriptionTier {
@@ -27,20 +22,15 @@ impl std::fmt::Display for SubscriptionTier {
 }
 
 /// Subscription status
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubscriptionStatus {
+    #[default]
     Active,
     PastDue,
     Canceled,
     Incomplete,
     Trialing,
-}
-
-impl Default for SubscriptionStatus {
-    fn default() -> Self {
-        Self::Active
-    }
 }
 
 /// Model-specific daily limits
@@ -49,12 +39,15 @@ impl Default for SubscriptionStatus {
 pub struct DailyLimits {
     pub haiku_requests: u32,
     pub sonnet_requests: u32,
-    pub opus_requests: u32,
     pub extended_thinking_requests: u32,
     /// AI organize operations (expensive - uses GPT + Claude)
     pub organize_requests: u32,
-    /// AI rename operations (uses Haiku)
+    /// AI rename operations (uses Sonnet)
     pub rename_requests: u32,
+    // OpenAI GPT models
+    pub gpt52_requests: u32,
+    pub gpt5mini_requests: u32,
+    pub gpt5nano_requests: u32,
 }
 
 impl DailyLimits {
@@ -64,18 +57,24 @@ impl DailyLimits {
             SubscriptionTier::Free => Self {
                 haiku_requests: 100,
                 sonnet_requests: 0,
-                opus_requests: 0,
                 extended_thinking_requests: 0,
                 organize_requests: 1,  // Free users get 1 organize/day
                 rename_requests: 10,   // Free users get 10 renames/day
+                // GPT models - Free tier
+                gpt52_requests: 0,      // Pro only
+                gpt5mini_requests: 50,  // Mid-tier GPT
+                gpt5nano_requests: 100, // Budget GPT
             },
             SubscriptionTier::Pro => Self {
                 haiku_requests: 300,
                 sonnet_requests: 50,
-                opus_requests: 10,
                 extended_thinking_requests: 5,
                 organize_requests: 20,  // Pro users get 20 organizes/day
                 rename_requests: 100,   // Pro users get 100 renames/day
+                // GPT models - Pro tier
+                gpt52_requests: 30,      // Most capable GPT
+                gpt5mini_requests: 200,  // Mid-tier GPT
+                gpt5nano_requests: 500,  // Budget GPT
             },
         }
     }
@@ -86,8 +85,12 @@ impl DailyLimits {
             self.haiku_requests
         } else if model.contains("sonnet") {
             self.sonnet_requests
-        } else if model.contains("opus") {
-            self.opus_requests
+        } else if model.starts_with("gpt-5.2") {
+            self.gpt52_requests
+        } else if model.starts_with("gpt-5-mini") {
+            self.gpt5mini_requests
+        } else if model.starts_with("gpt-5-nano") {
+            self.gpt5nano_requests
         } else {
             self.haiku_requests // Default to haiku
         }
@@ -176,11 +179,23 @@ impl ModelPricing {
                 input_per_million: 300,
                 output_per_million: 1500,
             }
-        } else if model.contains("opus") {
-            // Claude Opus: $15/1M input, $75/1M output
+        } else if model.starts_with("gpt-5.2") {
+            // GPT-5.2: Most capable, expensive
             Self {
-                input_per_million: 1500,
-                output_per_million: 7500,
+                input_per_million: 500,
+                output_per_million: 2000,
+            }
+        } else if model.starts_with("gpt-5-mini") {
+            // GPT-5 Mini: Mid-tier pricing
+            Self {
+                input_per_million: 100,
+                output_per_million: 400,
+            }
+        } else if model.starts_with("gpt-5-nano") {
+            // GPT-5 Nano: Budget pricing
+            Self {
+                input_per_million: 25,
+                output_per_million: 100,
             }
         } else {
             // Default to Haiku pricing
@@ -214,6 +229,10 @@ pub struct DailyUsage {
     pub organize_requests: u32,
     /// AI rename operations
     pub rename_requests: u32,
+    // OpenAI GPT models
+    pub gpt52_requests: u32,
+    pub gpt5mini_requests: u32,
+    pub gpt5nano_requests: u32,
 }
 
 impl DailyUsage {
@@ -223,8 +242,12 @@ impl DailyUsage {
             self.haiku_requests
         } else if model.contains("sonnet") {
             self.sonnet_requests
-        } else if model.contains("opus") {
-            self.opus_requests
+        } else if model.starts_with("gpt-5.2") {
+            self.gpt52_requests
+        } else if model.starts_with("gpt-5-mini") {
+            self.gpt5mini_requests
+        } else if model.starts_with("gpt-5-nano") {
+            self.gpt5nano_requests
         } else {
             self.haiku_requests // Default to haiku
         }

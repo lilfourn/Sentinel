@@ -26,7 +26,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://*.convex.cloud https://api.anthropic.com https://api.stripe.com https://*.clerk.dev https://*.clerk.accounts.dev https://clerk.app-sentinel.dev wss://*.convex.cloud https://github.com https://api.github.com https://raw.githubusercontent.com; img-src 'self' data: https:; font-src 'self' data:"
+      "csp": "default-src 'self' http://localhost:* 'unsafe-inline' 'unsafe-eval'; script-src 'self' http://localhost:* 'unsafe-inline' 'unsafe-eval' https://clerk.app-sentinel.dev https://*.clerk.dev https://*.clerk.accounts.dev blob:; style-src 'self' http://localhost:* 'unsafe-inline'; worker-src 'self' blob:; connect-src 'self' http://localhost:* ipc: ipc://localhost tauri: https://*.convex.cloud https://api.anthropic.com https://api.stripe.com https://*.clerk.dev https://*.clerk.accounts.dev https://clerk.app-sentinel.dev wss://*.convex.cloud https://github.com https://api.github.com https://raw.githubusercontent.com; img-src 'self' http://localhost:* data: https: blob:; font-src 'self' http://localhost:* data:; frame-src 'self' http://localhost:* https://*.clerk.dev https://*.clerk.accounts.dev https://clerk.app-sentinel.dev"
     }
   },
   "bundle": {

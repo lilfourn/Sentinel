@@ -8,10 +8,19 @@ import { InlineMentionDropdown } from './InlineMentionDropdown';
 import { UsageMeter } from '../subscription/UsageMeter';
 import { UpgradeBadge } from '../subscription/UpgradePrompt';
 
-const MODEL_OPTIONS: { value: ChatModel; label: string; modelType: ModelType }[] = [
-  { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5', modelType: 'sonnet' },
-  { value: 'claude-haiku-4-5', label: 'Haiku 4.5', modelType: 'haiku' },
-  { value: 'claude-opus-4-5', label: 'Opus 4.5', modelType: 'opus' },
+interface ModelOption {
+  value: ChatModel;
+  label: string;
+  modelType: ModelType;
+  provider: 'anthropic' | 'openai';
+}
+
+const MODEL_OPTIONS: ModelOption[] = [
+  { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5', modelType: 'sonnet', provider: 'anthropic' },
+  { value: 'claude-haiku-4-5', label: 'Haiku 4.5', modelType: 'haiku', provider: 'anthropic' },
+  { value: 'gpt-5.2-2025-12-11', label: 'GPT-5.2', modelType: 'gpt52', provider: 'openai' },
+  { value: 'gpt-5-mini-2025-08-07', label: 'GPT-5 Mini', modelType: 'gpt5mini', provider: 'openai' },
+  { value: 'gpt-5-nano-2025-08-07', label: 'GPT-5 Nano', modelType: 'gpt5nano', provider: 'openai' },
 ];
 
 // Debounce search delay
@@ -78,6 +87,10 @@ export function ChatInput() {
   const { tier, canUseModel, canUseExtendedThinking, openCheckout } = useSubscriptionStore();
   const currentModelType = chatModelToSubscriptionModel(model);
   const [showModelDropdown, setShowModelDropdown] = useState(false);
+
+  // Check if current model supports extended thinking (GPT models don't)
+  const currentModelOption = MODEL_OPTIONS.find((opt) => opt.value === model);
+  const modelSupportsThinking = currentModelOption?.provider === 'anthropic';
 
   // Cleanup debounce timeout on unmount
   useEffect(() => {
@@ -344,6 +357,10 @@ export function ChatInput() {
             {/* Extended thinking toggle */}
             <button
               onClick={() => {
+                if (!modelSupportsThinking) {
+                  // GPT models don't support extended thinking - do nothing
+                  return;
+                }
                 if (canUseExtendedThinking()) {
                   setExtendedThinking(!extendedThinking);
                 } else {
@@ -351,31 +368,39 @@ export function ChatInput() {
                 }
               }}
               className={`p-2 rounded-lg transition-colors relative ${
-                extendedThinking && canUseExtendedThinking()
-                  ? 'bg-purple-500/20 text-purple-400 hover:bg-purple-500/30'
-                  : canUseExtendedThinking()
-                    ? 'hover:bg-white/10 text-gray-400 hover:text-gray-200'
-                    : 'hover:bg-white/10 text-gray-500'
+                !modelSupportsThinking
+                  ? 'hover:bg-white/10 text-gray-600 cursor-not-allowed'
+                  : extendedThinking && canUseExtendedThinking()
+                    ? 'bg-purple-500/20 text-purple-400 hover:bg-purple-500/30'
+                    : canUseExtendedThinking()
+                      ? 'hover:bg-white/10 text-gray-400 hover:text-gray-200'
+                      : 'hover:bg-white/10 text-gray-500'
               }`}
               title={
-                !canUseExtendedThinking()
-                  ? 'Extended thinking requires Pro'
-                  : extendedThinking
-                    ? 'Extended thinking enabled'
-                    : 'Extended thinking disabled'
+                !modelSupportsThinking
+                  ? 'Extended thinking is not available for GPT models'
+                  : !canUseExtendedThinking()
+                    ? 'Extended thinking requires Pro'
+                    : extendedThinking
+                      ? 'Extended thinking enabled'
+                      : 'Extended thinking disabled'
               }
               aria-label={
-                !canUseExtendedThinking()
-                  ? 'Upgrade to Pro for extended thinking'
-                  : extendedThinking
-                    ? 'Disable extended thinking'
-                    : 'Enable extended thinking'
+                !modelSupportsThinking
+                  ? 'Extended thinking not available for this model'
+                  : !canUseExtendedThinking()
+                    ? 'Upgrade to Pro for extended thinking'
+                    : extendedThinking
+                      ? 'Disable extended thinking'
+                      : 'Enable extended thinking'
               }
-              aria-pressed={extendedThinking}
-              disabled={isProcessing}
+              aria-pressed={modelSupportsThinking && extendedThinking}
+              disabled={isProcessing || !modelSupportsThinking}
             >
               <Brain size={18} aria-hidden="true" />
-              {!canUseExtendedThinking() && (
+              {!modelSupportsThinking ? (
+                <span className="absolute -top-0.5 -right-0.5 text-gray-500 text-[8px]">×</span>
+              ) : !canUseExtendedThinking() && (
                 <Lock size={8} className="absolute -top-0.5 -right-0.5 text-orange-400" />
               )}
             </button>

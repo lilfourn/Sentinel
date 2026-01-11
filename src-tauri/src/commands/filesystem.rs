@@ -528,7 +528,7 @@ pub async fn validate_drag_drop(
 
     // Convert to Path references
     let source_paths: Vec<std::path::PathBuf> =
-        sources.iter().map(|s| std::path::PathBuf::from(s)).collect();
+        sources.iter().map(std::path::PathBuf::from).collect();
     let source_refs: Vec<&Path> = source_paths.iter().map(|p| p.as_path()).collect();
 
     // Check for cycles

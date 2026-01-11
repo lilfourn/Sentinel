@@ -292,8 +292,7 @@ mod tests {
 
     #[test]
     fn test_renderer_creation() {
+        // Creating a renderer should not panic
         let _renderer = PdfRenderer::new();
-        // Just verify it doesn't panic
-        assert!(true);
     }
 }

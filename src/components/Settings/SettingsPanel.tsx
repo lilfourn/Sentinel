@@ -501,15 +501,19 @@ function SubscriptionSection() {
               </li>
               <li className="flex items-center gap-1.5">
                 <Check size={12} className="text-green-500" />
-                Opus 4.5 (10/day)
-              </li>
-              <li className="flex items-center gap-1.5">
-                <Check size={12} className="text-green-500" />
                 Extended thinking (5/day)
               </li>
               <li className="flex items-center gap-1.5">
                 <Check size={12} className="text-green-500" />
                 300 Haiku requests/day
+              </li>
+              <li className="flex items-center gap-1.5">
+                <Check size={12} className="text-green-500" />
+                20 AI organizes/day
+              </li>
+              <li className="flex items-center gap-1.5">
+                <Check size={12} className="text-green-500" />
+                100 AI renames/day
               </li>
             </ul>
           </div>

@@ -66,6 +66,20 @@ impl UsageTracker {
             [],
         );
 
+        // Migration: Add GPT model columns if they don't exist
+        let _ = conn.execute(
+            "ALTER TABLE daily_usage ADD COLUMN gpt52_requests INTEGER DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE daily_usage ADD COLUMN gpt5mini_requests INTEGER DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE daily_usage ADD COLUMN gpt5nano_requests INTEGER DEFAULT 0",
+            [],
+        );
+
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -91,7 +105,8 @@ impl UsageTracker {
         let result = conn.query_row(
             "SELECT date, haiku_requests, sonnet_requests, opus_requests,
                     extended_thinking_requests, total_input_tokens, total_output_tokens,
-                    COALESCE(organize_requests, 0), COALESCE(rename_requests, 0)
+                    COALESCE(organize_requests, 0), COALESCE(rename_requests, 0),
+                    COALESCE(gpt52_requests, 0), COALESCE(gpt5mini_requests, 0), COALESCE(gpt5nano_requests, 0)
              FROM daily_usage WHERE user_id = ? AND date = ?",
             params![user_id, today],
             |row| {
@@ -105,6 +120,9 @@ impl UsageTracker {
                     total_output_tokens: row.get(6)?,
                     organize_requests: row.get(7)?,
                     rename_requests: row.get(8)?,
+                    gpt52_requests: row.get(9)?,
+                    gpt5mini_requests: row.get(10)?,
+                    gpt5nano_requests: row.get(11)?,
                 })
             },
         );
@@ -136,8 +154,12 @@ impl UsageTracker {
             "haiku_requests"
         } else if model.contains("sonnet") {
             "sonnet_requests"
-        } else if model.contains("opus") {
-            "opus_requests"
+        } else if model.starts_with("gpt-5.2") {
+            "gpt52_requests"
+        } else if model.starts_with("gpt-5-mini") {
+            "gpt5mini_requests"
+        } else if model.starts_with("gpt-5-nano") {
+            "gpt5nano_requests"
         } else {
             "haiku_requests" // Default to haiku
         };
@@ -185,7 +207,8 @@ impl UsageTracker {
             .prepare(
                 "SELECT date, haiku_requests, sonnet_requests, opus_requests,
                     extended_thinking_requests, total_input_tokens, total_output_tokens,
-                    COALESCE(organize_requests, 0), COALESCE(rename_requests, 0)
+                    COALESCE(organize_requests, 0), COALESCE(rename_requests, 0),
+                    COALESCE(gpt52_requests, 0), COALESCE(gpt5mini_requests, 0), COALESCE(gpt5nano_requests, 0)
              FROM daily_usage
              WHERE user_id = ? AND date >= ?
              ORDER BY date ASC",
@@ -204,6 +227,9 @@ impl UsageTracker {
                     total_output_tokens: row.get(6)?,
                     organize_requests: row.get(7)?,
                     rename_requests: row.get(8)?,
+                    gpt52_requests: row.get(9)?,
+                    gpt5mini_requests: row.get(10)?,
+                    gpt5nano_requests: row.get(11)?,
                 })
             })
             .map_err(|e| format!("Query failed: {}", e))?;

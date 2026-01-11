@@ -45,7 +45,7 @@ const FORBIDDEN_PREFIXES: &[&str] = &[
 ];
 
 /// Validate that a path is safe to watch
-fn validate_watch_path(path: &PathBuf) -> Result<(), String> {
+fn validate_watch_path(path: &std::path::Path) -> Result<(), String> {
     // Resolve symlinks and get canonical path
     let canonical = path.canonicalize()
         .map_err(|e| format!("Cannot resolve path: {}", e))?;

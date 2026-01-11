@@ -61,7 +61,17 @@ pub fn run() {
     let grok_abort_flag = GrokAbortFlag::default();
     let billing_state = BillingState::default();
 
-    tauri::Builder::default()
+    // Build base Tauri app
+    // Use localhost plugin in release builds to serve via HTTP (Clerk requires this)
+    // Port 12753 chosen to avoid conflicts with common dev ports
+    #[cfg(not(debug_assertions))]
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_localhost::Builder::new(12753u16).build());
+
+    #[cfg(debug_assertions)]
+    let builder = tauri::Builder::default();
+
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())

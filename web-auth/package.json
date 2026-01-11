@@ -1,0 +1,10 @@
+{
+  "name": "sentinel-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Web presence for Sentinel desktop app",
+  "scripts": {
+    "dev": "npx serve public",
+    "preview": "npx serve public -p 3000"
+  }
+}
