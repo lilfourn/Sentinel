@@ -13,36 +13,6 @@ import { DesktopAuthProvider, useDesktopAuth } from "./contexts/DesktopAuthConte
 import { isTauriProduction } from "./lib/desktop-auth";
 import App from "./App";
 
-// === DIAGNOSTIC: Check Tauri availability ===
-const TAURI_AVAILABLE = typeof window !== 'undefined' && '__TAURI__' in window;
-console.warn('[DIAGNOSTIC] Tauri available:', TAURI_AVAILABLE);
-console.warn('[DIAGNOSTIC] window.__TAURI__:', (window as unknown as { __TAURI__?: unknown }).__TAURI__);
-console.warn('[DIAGNOSTIC] Current URL:', window.location.href);
-console.warn('[DIAGNOSTIC] isTauriProduction():', isTauriProduction());
-
-// Test invoke if Tauri is available
-if (TAURI_AVAILABLE) {
-  import('@tauri-apps/api/core').then(({ invoke }) => {
-    console.warn('[DIAGNOSTIC] Testing invoke...');
-    invoke('get_home_directory')
-      .then((result) => console.warn('[DIAGNOSTIC] invoke SUCCESS:', result))
-      .catch((err) => console.error('[DIAGNOSTIC] invoke FAILED:', err));
-  });
-
-  import('@tauri-apps/api/event').then(({ emit, listen }) => {
-    console.warn('[DIAGNOSTIC] Testing events...');
-    listen('test-event', (e) => console.warn('[DIAGNOSTIC] Event received:', e))
-      .then(() => {
-        emit('test-event', { test: true });
-        console.warn('[DIAGNOSTIC] Event emitted');
-      })
-      .catch((err) => console.error('[DIAGNOSTIC] Event setup FAILED:', err));
-  });
-} else {
-  console.error('[DIAGNOSTIC] Tauri NOT available - IPC will not work!');
-}
-// === END DIAGNOSTIC ===
-
 // Clerk publishable key
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 

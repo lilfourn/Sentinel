@@ -122,7 +122,7 @@ export default defineSchema({
   dailyUsage: defineTable({
     userId: v.id("users"),
     date: v.string(), // "2025-01-15" format (UTC)
-    // Per-model request counts
+    // Per-model request counts (Claude)
     haikuRequests: v.number(),
     sonnetRequests: v.number(),
     opusRequests: v.number(),
@@ -130,6 +130,10 @@ export default defineSchema({
     // Feature usage counts
     organizeRequests: v.number(),
     renameRequests: v.number(),
+    // Per-model request counts (OpenAI GPT) - optional for migration
+    gpt52Requests: v.optional(v.number()),
+    gpt5miniRequests: v.optional(v.number()),
+    gpt5nanoRequests: v.optional(v.number()),
     // Last updated timestamp
     updatedAt: v.number(),
   })

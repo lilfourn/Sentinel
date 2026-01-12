@@ -11,17 +11,25 @@ export const TIER_LIMITS = {
     sonnet: 0,
     opus: 0,
     extendedThinking: 0,
+    // GPT models
+    gpt52: 0,        // Pro only
+    gpt5mini: 50,    // Mid-tier GPT
+    gpt5nano: 100,   // Budget GPT
   },
   pro: {
     haiku: 300,
     sonnet: 50,
     opus: 10,
     extendedThinking: 5,
+    // GPT models
+    gpt52: 30,       // Most capable GPT
+    gpt5mini: 200,   // Mid-tier GPT
+    gpt5nano: 500,   // Budget GPT
   },
 } as const;
 
 export type Tier = keyof typeof TIER_LIMITS;
-export type ModelType = "haiku" | "sonnet" | "opus" | "extendedThinking";
+export type ModelType = "haiku" | "sonnet" | "opus" | "extendedThinking" | "gpt52" | "gpt5mini" | "gpt5nano";
 
 // Helper: Get UTC date string
 function getUTCDate(): string {
@@ -105,6 +113,10 @@ export const getDailyUsage = query({
         extendedThinkingRequests: 0,
         organizeRequests: 0,
         renameRequests: 0,
+        // GPT models
+        gpt52Requests: 0,
+        gpt5miniRequests: 0,
+        gpt5nanoRequests: 0,
       };
     }
 
@@ -122,7 +134,10 @@ export const checkLimit = query({
       v.literal("haiku"),
       v.literal("sonnet"),
       v.literal("opus"),
-      v.literal("extendedThinking")
+      v.literal("extendedThinking"),
+      v.literal("gpt52"),
+      v.literal("gpt5mini"),
+      v.literal("gpt5nano")
     ),
   },
   handler: async (ctx, args) => {
@@ -180,10 +195,13 @@ export const checkLimit = query({
       sonnet: "sonnetRequests",
       opus: "opusRequests",
       extendedThinking: "extendedThinkingRequests",
+      gpt52: "gpt52Requests",
+      gpt5mini: "gpt5miniRequests",
+      gpt5nano: "gpt5nanoRequests",
     } as const;
 
     const modelKey = modelKeyMap[args.model];
-    const used = (usage?.[modelKey] as number) ?? 0;
+    const used = (usage?.[modelKey] as number | undefined) ?? 0;
     const remaining = Math.max(0, limit - used);
 
     return {
@@ -234,7 +252,14 @@ export const getUsageHistory = query({
  */
 export const recordUsage = mutation({
   args: {
-    model: v.union(v.literal("haiku"), v.literal("sonnet"), v.literal("opus")),
+    model: v.union(
+      v.literal("haiku"),
+      v.literal("sonnet"),
+      v.literal("opus"),
+      v.literal("gpt52"),
+      v.literal("gpt5mini"),
+      v.literal("gpt5nano")
+    ),
     isExtendedThinking: v.optional(v.boolean()),
     requestType: v.optional(
       v.union(v.literal("chat"), v.literal("organize"), v.literal("rename"))
@@ -275,6 +300,10 @@ export const recordUsage = mutation({
         extendedThinkingRequests: 0,
         organizeRequests: 0,
         renameRequests: 0,
+        // GPT models
+        gpt52Requests: 0,
+        gpt5miniRequests: 0,
+        gpt5nanoRequests: 0,
         updatedAt: now,
       });
       usage = await ctx.db.get(usageId);
@@ -290,9 +319,12 @@ export const recordUsage = mutation({
       haiku: "haikuRequests",
       sonnet: "sonnetRequests",
       opus: "opusRequests",
+      gpt52: "gpt52Requests",
+      gpt5mini: "gpt5miniRequests",
+      gpt5nano: "gpt5nanoRequests",
     } as const;
     const modelKey = modelKeyMap[args.model];
-    updates[modelKey] = (usage[modelKey] as number) + 1;
+    updates[modelKey] = ((usage[modelKey] as number) ?? 0) + 1;
 
     // Increment extended thinking if applicable
     if (args.isExtendedThinking) {
