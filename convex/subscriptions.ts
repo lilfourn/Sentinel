@@ -1,5 +1,7 @@
 import { v } from "convex/values";
 import { mutation, query, internalMutation, internalQuery } from "./_generated/server";
+import { Id } from "./_generated/dataModel";
+import type { MutationCtx } from "./_generated/server";
 
 // =============================================================================
 // TIER CONFIGURATION
@@ -286,10 +288,11 @@ export const recordUsage = mutation({
 });
 
 /**
- * Record API usage by Clerk user ID (fallback for desktop auth when JWT expires)
- * This is used when the JWT auth fails but we still need to track usage
+ * Record API usage by Clerk user ID (internal mutation for secure backend calls)
+ * This is an INTERNAL mutation - not callable directly from clients.
+ * Use the HTTP action /api/record-usage instead which validates the request.
  */
-export const recordUsageByClerkId = mutation({
+export const recordUsageByClerkId = internalMutation({
   args: {
     clerkUserId: v.string(),
     model: v.union(
@@ -306,34 +309,21 @@ export const recordUsageByClerkId = mutation({
     ),
   },
   handler: async (ctx, args) => {
-    // Validate clerk user ID format (basic sanity check)
+    // Validate clerk user ID format
     if (!args.clerkUserId || !args.clerkUserId.startsWith("user_")) {
-      throw new Error("Invalid Clerk user ID format");
+      throw new Error("Invalid request");
     }
 
-    // Try to find user by clerkId index first (fast path)
+    // Try to find user by clerkId index (fast path)
     let user = await ctx.db
       .query("users")
       .withIndex("by_clerk_id", (q) => q.eq("clerkId", args.clerkUserId))
       .first();
 
-    // Fallback: try finding by tokenIdentifier suffix (for users created before clerkId field)
+    // If not found by index, user doesn't exist (no full table scan for security)
     if (!user) {
-      const allUsers = await ctx.db.query("users").collect();
-      const matchedUser = allUsers.find(u =>
-        u.tokenIdentifier?.endsWith(`|${args.clerkUserId}`)
-      );
-      if (matchedUser) {
-        // Backfill the clerkId for future lookups
-        await ctx.db.patch(matchedUser._id, { clerkId: args.clerkUserId });
-        console.log(`[recordUsageByClerkId] Backfilled clerkId for user ${matchedUser._id}`);
-        user = matchedUser;
-      }
-    }
-
-    if (!user) {
-      console.error(`[recordUsageByClerkId] User not found for clerkId: ${args.clerkUserId}`);
-      throw new Error("User not found");
+      // Don't reveal whether user exists or not - use generic error
+      throw new Error("Invalid request");
     }
 
     return await recordUsageForUser(ctx, user._id, args.model, args.isExtendedThinking, args.requestType);
@@ -344,8 +334,8 @@ export const recordUsageByClerkId = mutation({
  * Internal helper to record usage for a user
  */
 async function recordUsageForUser(
-  ctx: { db: any },
-  userId: any,
+  ctx: Pick<MutationCtx, "db">,
+  userId: Id<"users">,
   model: "haiku" | "sonnet" | "opus" | "gpt52" | "gpt5mini" | "gpt5nano",
   isExtendedThinking?: boolean,
   requestType?: "chat" | "organize" | "rename"

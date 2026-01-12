@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { mutation, query, internalQuery } from "./_generated/server";
 
 /**
  * Extract Clerk user ID from tokenIdentifier
@@ -216,5 +216,18 @@ export const deleteAccount = mutation({
     // Delete user
     await ctx.db.delete(user._id);
     return true;
+  },
+});
+
+/**
+ * Get user by token identifier (internal query for HTTP actions)
+ */
+export const getUserByToken = internalQuery({
+  args: { tokenIdentifier: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("users")
+      .withIndex("by_token", (q) => q.eq("tokenIdentifier", args.tokenIdentifier))
+      .unique();
   },
 });

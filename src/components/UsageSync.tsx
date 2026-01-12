@@ -50,9 +50,11 @@ interface RenameCompletePayload {
  * - renameHistory: Auto-rename operations
  * - usageStats: Monthly aggregated stats (incremented by recordOrganize/recordRename)
  */
+// Get Convex URL for HTTP action calls
+const CONVEX_URL = import.meta.env.VITE_CONVEX_URL?.replace(".cloud", ".site") || "";
+
 export function UsageSync() {
   const recordUsage = useMutation(api.subscriptions.recordUsage);
-  const recordUsageByClerkId = useMutation(api.subscriptions.recordUsageByClerkId);
   const recordOrganize = useMutation(api.history.recordOrganize);
   const recordRename = useMutation(api.history.recordRename);
 
@@ -66,7 +68,6 @@ export function UsageSync() {
 
   // Stable callback refs for mutations (prevents re-registration on mutation identity changes)
   const recordUsageRef = useRef(recordUsage);
-  const recordUsageByClerkIdRef = useRef(recordUsageByClerkId);
   const recordOrganizeRef = useRef(recordOrganize);
   const recordRenameRef = useRef(recordRename);
   const userIdRef = useRef(userId);
@@ -74,15 +75,14 @@ export function UsageSync() {
   // Keep refs up to date
   useEffect(() => {
     recordUsageRef.current = recordUsage;
-    recordUsageByClerkIdRef.current = recordUsageByClerkId;
     recordOrganizeRef.current = recordOrganize;
     recordRenameRef.current = recordRename;
     userIdRef.current = userId;
-  }, [recordUsage, recordUsageByClerkId, recordOrganize, recordRename, userId]);
+  }, [recordUsage, recordOrganize, recordRename, userId]);
 
   /**
    * Helper to record usage with automatic fallback
-   * Tries JWT-authenticated mutation first, falls back to clerkId-based mutation
+   * Tries JWT-authenticated mutation first, falls back to HTTP action with clerkId
    */
   const recordUsageWithFallback = useCallback(async (
     model: "haiku" | "sonnet" | "gpt52" | "gpt5mini" | "gpt5nano",
@@ -100,18 +100,31 @@ export function UsageSync() {
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
 
-      // If auth failed, try fallback with clerk ID
+      // If auth failed, try fallback with HTTP action
       if (errorMessage.includes("Not authenticated") || errorMessage.includes("Unauthenticated")) {
         const clerkId = userIdRef.current;
         if (clerkId && clerkId.startsWith("user_")) {
-          console.log("[UsageSync] JWT auth failed, falling back to clerkId:", clerkId);
-          await recordUsageByClerkIdRef.current({
-            clerkUserId: clerkId,
-            model,
-            isExtendedThinking,
-            requestType,
+          console.log("[UsageSync] JWT auth failed, falling back to HTTP action with clerkId");
+
+          // Call HTTP action instead of direct mutation (more secure)
+          const response = await fetch(`${CONVEX_URL}/record-usage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              clerkUserId: clerkId,
+              model,
+              isExtendedThinking,
+              requestType,
+            }),
           });
-          return { success: true, method: "clerkId" };
+
+          if (!response.ok) {
+            const error = await response.json().catch(() => ({ error: "Unknown error" }));
+            throw new Error(error.error || "Failed to record usage");
+          }
+
+          const result = await response.json();
+          return { success: true, method: result.method || "http" };
         } else {
           console.error("[UsageSync] No valid clerkId available for fallback:", clerkId);
           throw new Error("Not authenticated and no clerkId available");

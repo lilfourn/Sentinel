@@ -365,6 +365,139 @@ http.route({
 });
 
 // =============================================================================
+// USAGE RECORDING (Fallback for expired JWT)
+// =============================================================================
+
+/**
+ * Record API usage when JWT is expired
+ * POST /record-usage
+ * Body: { clerkUserId, model, isExtendedThinking?, requestType? }
+ *
+ * This endpoint is called when the frontend's JWT has expired but we still
+ * need to record usage. It requires the request to come from the Tauri app
+ * (verified via CORS) and the clerkUserId must match a user in our database.
+ *
+ * Note: This is less secure than JWT auth but necessary for desktop apps where
+ * JWT refresh isn't always possible. CORS restricts access to tauri://localhost.
+ */
+http.route({
+  path: "/record-usage",
+  method: "OPTIONS",
+  handler: corsPreflightHandler,
+});
+
+http.route({
+  path: "/record-usage",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    // First try JWT auth (preferred)
+    const identity = await ctx.auth.getUserIdentity();
+
+    try {
+      const body = await request.json() as {
+        clerkUserId?: string;
+        model?: string;
+        isExtendedThinking?: boolean;
+        requestType?: string;
+      };
+
+      // Validate required fields
+      if (!body.model) {
+        return withCors(new Response(JSON.stringify({ error: "Missing model" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+
+      // Validate model is one of the allowed values
+      const allowedModels = ["haiku", "sonnet", "opus", "gpt52", "gpt5mini", "gpt5nano"];
+      if (!allowedModels.includes(body.model)) {
+        return withCors(new Response(JSON.stringify({ error: "Invalid model" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+
+      // Validate requestType if provided
+      const allowedRequestTypes = ["chat", "organize", "rename"];
+      if (body.requestType && !allowedRequestTypes.includes(body.requestType)) {
+        return withCors(new Response(JSON.stringify({ error: "Invalid requestType" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+
+      // If we have JWT identity, use the authenticated mutation
+      if (identity) {
+        // Find user and record usage via standard mutation path
+        const user = await ctx.runQuery(internal.users.getUserByToken, {
+          tokenIdentifier: identity.tokenIdentifier,
+        });
+
+        if (user) {
+          await ctx.runMutation(internal.subscriptions.recordUsageByClerkId, {
+            clerkUserId: user.clerkId || extractClerkIdFromToken(identity.tokenIdentifier),
+            model: body.model as "haiku" | "sonnet" | "opus" | "gpt52" | "gpt5mini" | "gpt5nano",
+            isExtendedThinking: body.isExtendedThinking,
+            requestType: body.requestType as "chat" | "organize" | "rename" | undefined,
+          });
+
+          return withCors(new Response(JSON.stringify({ success: true, method: "jwt" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }));
+        }
+      }
+
+      // Fallback: Use clerkUserId from request body
+      // This is only allowed because CORS restricts access to tauri://localhost
+      if (!body.clerkUserId) {
+        return withCors(new Response(JSON.stringify({ error: "Authentication required" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+
+      // Validate clerkUserId format
+      if (!body.clerkUserId.startsWith("user_")) {
+        return withCors(new Response(JSON.stringify({ error: "Invalid request" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+
+      // Record usage using internal mutation
+      await ctx.runMutation(internal.subscriptions.recordUsageByClerkId, {
+        clerkUserId: body.clerkUserId,
+        model: body.model as "haiku" | "sonnet" | "opus" | "gpt52" | "gpt5mini" | "gpt5nano",
+        isExtendedThinking: body.isExtendedThinking,
+        requestType: body.requestType as "chat" | "organize" | "rename" | undefined,
+      });
+
+      return withCors(new Response(JSON.stringify({ success: true, method: "clerkId" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }));
+
+    } catch (err) {
+      console.error("Error recording usage:", err);
+      return withCors(new Response(JSON.stringify({ error: "Failed to record usage" }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      }));
+    }
+  }),
+});
+
+/**
+ * Extract Clerk user ID from token identifier
+ */
+function extractClerkIdFromToken(tokenIdentifier: string): string {
+  const parts = tokenIdentifier.split("|");
+  return parts[parts.length - 1] || "";
+}
+
+// =============================================================================
 // HELPER FUNCTIONS
 // =============================================================================
 
