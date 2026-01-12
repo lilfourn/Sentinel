@@ -36,6 +36,11 @@ export function AuthSync() {
     }
   }, [isSignedIn, user?.id, setUserId]);
 
+  // Reset hasSynced when user changes to ensure new users get synced
+  useEffect(() => {
+    hasSynced.current = false;
+  }, [user?.id]);
+
   // Handle loading state - subscription is undefined while Convex query is loading
   useEffect(() => {
     if (subscription === undefined && isSignedIn) {

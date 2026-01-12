@@ -34,6 +34,11 @@ export function DesktopAuthSync() {
     }
   }, [isSignedIn, user?.id, setUserId]);
 
+  // Reset hasSynced when user changes to ensure new users get synced
+  useEffect(() => {
+    hasSynced.current = false;
+  }, [user?.id]);
+
   // Handle loading state
   useEffect(() => {
     if (subscription === undefined && isSignedIn) {
