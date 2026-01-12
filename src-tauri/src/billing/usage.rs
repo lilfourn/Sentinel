@@ -325,6 +325,59 @@ impl UsageTracker {
         }
     }
 
+    /// Sync usage from Convex (source of truth)
+    /// This allows syncing Convex data back to local SQLite for offline consistency
+    pub fn sync_from_convex(
+        &self,
+        user_id: &str,
+        date: &str,
+        haiku_requests: u64,
+        sonnet_requests: u64,
+        extended_thinking_requests: u64,
+        gpt52_requests: u64,
+        gpt5mini_requests: u64,
+        gpt5nano_requests: u64,
+    ) -> Result<(), String> {
+        let conn = acquire_lock(&self.conn);
+
+        conn.execute(
+            r#"
+            INSERT INTO daily_usage (user_id, date, haiku_requests, sonnet_requests,
+                                     extended_thinking_requests, gpt52_requests,
+                                     gpt5mini_requests, gpt5nano_requests)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ON CONFLICT(user_id, date) DO UPDATE SET
+                haiku_requests = MAX(haiku_requests, ?3),
+                sonnet_requests = MAX(sonnet_requests, ?4),
+                extended_thinking_requests = MAX(extended_thinking_requests, ?5),
+                gpt52_requests = MAX(gpt52_requests, ?6),
+                gpt5mini_requests = MAX(gpt5mini_requests, ?7),
+                gpt5nano_requests = MAX(gpt5nano_requests, ?8)
+            "#,
+            params![
+                user_id,
+                date,
+                haiku_requests as i64,
+                sonnet_requests as i64,
+                extended_thinking_requests as i64,
+                gpt52_requests as i64,
+                gpt5mini_requests as i64,
+                gpt5nano_requests as i64,
+            ],
+        )
+        .map_err(|e| format!("Failed to sync usage from Convex: {}", e))?;
+
+        debug!(
+            user = user_id,
+            date = date,
+            haiku = haiku_requests,
+            sonnet = sonnet_requests,
+            "Synced usage from Convex"
+        );
+
+        Ok(())
+    }
+
     /// Clear old usage records (older than 90 days)
     #[allow(dead_code)]
     pub fn cleanup_old_records(&self) -> Result<usize, String> {

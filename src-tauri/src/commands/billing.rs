@@ -240,3 +240,29 @@ pub async fn get_monthly_tokens(
 ) -> Result<(u64, u64), String> {
     billing.usage_tracker.get_monthly_token_totals(&user_id)
 }
+
+/// Sync usage from Convex (source of truth)
+/// Called by frontend when Convex usage data is fetched
+#[tauri::command]
+pub async fn sync_usage_from_convex(
+    billing: State<'_, BillingState>,
+    user_id: String,
+    date: String,
+    haiku_requests: u64,
+    sonnet_requests: u64,
+    extended_thinking_requests: u64,
+    gpt52_requests: u64,
+    gpt5mini_requests: u64,
+    gpt5nano_requests: u64,
+) -> Result<(), String> {
+    billing.usage_tracker.sync_from_convex(
+        &user_id,
+        &date,
+        haiku_requests,
+        sonnet_requests,
+        extended_thinking_requests,
+        gpt52_requests,
+        gpt5mini_requests,
+        gpt5nano_requests,
+    )
+}

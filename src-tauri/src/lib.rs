@@ -239,6 +239,7 @@ pub fn run() {
             can_use_extended_thinking,
             check_token_quota,
             get_monthly_tokens,
+            sync_usage_from_convex,
             // History commands (multi-level undo)
             history_has_history,
             history_get_summary,

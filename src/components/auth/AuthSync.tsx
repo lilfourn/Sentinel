@@ -3,13 +3,13 @@ import { useUser, useAuth } from "@clerk/clerk-react";
 import { useMutation, useQuery } from "convex/react";
 import { invoke } from "@tauri-apps/api/core";
 import { api } from "../../../convex/_generated/api";
-import { setAuthTokenGetter, useSubscriptionStore } from "../../stores/subscription-store";
+import { setAuthTokenGetter, useSubscriptionStore, DailyUsage } from "../../stores/subscription-store";
 
 /**
  * Invisible component that syncs Clerk user to Convex on sign-in.
  * Creates user record and default settings in Convex database.
  * Also sets up auth token getter for subscription HTTP endpoints.
- * Syncs subscription data from Convex to the local store.
+ * Syncs subscription data AND daily usage from Convex to the local store.
  */
 export function AuthSync() {
   const { user, isSignedIn, isLoaded } = useUser();
@@ -20,6 +20,10 @@ export function AuthSync() {
   // Fetch subscription from Convex (auto-updates on changes)
   // undefined = loading, null = not authenticated, object = subscription data
   const subscription = useQuery(api.subscriptions.getSubscription);
+
+  // Fetch daily usage from Convex (auto-updates on changes)
+  // This is the source of truth for usage tracking
+  const dailyUsage = useQuery(api.subscriptions.getDailyUsage);
 
   // Update subscription store when Convex data changes
   const setUserId = useSubscriptionStore((s) => s.setUserId);
@@ -81,6 +85,54 @@ export function AuthSync() {
       useSubscriptionStore.setState({ isLoading: false });
     }
   }, [subscription, isSignedIn, user?.id]);
+
+  // Sync daily usage from Convex to local store
+  // This ensures usage persists across app refreshes
+  useEffect(() => {
+    if (dailyUsage && user?.id) {
+      console.log("[AuthSync] Syncing daily usage from Convex:", {
+        date: dailyUsage.date,
+        haiku: dailyUsage.haikuRequests,
+        sonnet: dailyUsage.sonnetRequests,
+        gpt52: dailyUsage.gpt52Requests ?? 0,
+        gpt5mini: dailyUsage.gpt5miniRequests ?? 0,
+        gpt5nano: dailyUsage.gpt5nanoRequests ?? 0,
+      });
+
+      // Map Convex usage to local store format
+      const usage: DailyUsage = {
+        date: dailyUsage.date,
+        haikuRequests: dailyUsage.haikuRequests,
+        sonnetRequests: dailyUsage.sonnetRequests,
+        extendedThinkingRequests: dailyUsage.extendedThinkingRequests,
+        // Convex doesn't track tokens, set to 0
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        // GPT models (with fallback for older records)
+        gpt52Requests: dailyUsage.gpt52Requests ?? 0,
+        gpt5miniRequests: dailyUsage.gpt5miniRequests ?? 0,
+        gpt5nanoRequests: dailyUsage.gpt5nanoRequests ?? 0,
+      };
+
+      // Update frontend Zustand store with Convex usage data
+      useSubscriptionStore.setState({ usage });
+
+      // Also sync to Rust backend for consistency (optional but helps keep local cache in sync)
+      invoke('sync_usage_from_convex', {
+        userId: user.id,
+        date: usage.date,
+        haikuRequests: usage.haikuRequests,
+        sonnetRequests: usage.sonnetRequests,
+        extendedThinkingRequests: usage.extendedThinkingRequests,
+        gpt52Requests: usage.gpt52Requests,
+        gpt5miniRequests: usage.gpt5miniRequests,
+        gpt5nanoRequests: usage.gpt5nanoRequests,
+      }).catch((err) => {
+        // Non-critical - Rust backend may not have this command yet
+        console.debug("[AuthSync] Failed to sync usage to Rust backend:", err);
+      });
+    }
+  }, [dailyUsage, user?.id]);
 
   // Create stable token getter for subscription store
   const getConvexToken = useCallback(async () => {
