@@ -249,6 +249,7 @@ export const getUsageHistory = query({
 
 /**
  * Record API usage (called after successful API call)
+ * Uses JWT auth - may fail in desktop mode when tokens expire
  */
 export const recordUsage = mutation({
   args: {
@@ -280,68 +281,137 @@ export const recordUsage = mutation({
       throw new Error("User not found");
     }
 
-    const today = getUTCDate();
-    const now = Date.now();
-
-    // Get or create daily usage record
-    let usage = await ctx.db
-      .query("dailyUsage")
-      .withIndex("by_user_date", (q) => q.eq("userId", user._id).eq("date", today))
-      .unique();
-
-    if (!usage) {
-      // Create new daily record
-      const usageId = await ctx.db.insert("dailyUsage", {
-        userId: user._id,
-        date: today,
-        haikuRequests: 0,
-        sonnetRequests: 0,
-        opusRequests: 0,
-        extendedThinkingRequests: 0,
-        organizeRequests: 0,
-        renameRequests: 0,
-        // GPT models
-        gpt52Requests: 0,
-        gpt5miniRequests: 0,
-        gpt5nanoRequests: 0,
-        updatedAt: now,
-      });
-      usage = await ctx.db.get(usageId);
-    }
-
-    if (!usage) throw new Error("Failed to get usage record");
-
-    // Build update object
-    const updates: Record<string, number> = { updatedAt: now };
-
-    // Increment model counter
-    const modelKeyMap = {
-      haiku: "haikuRequests",
-      sonnet: "sonnetRequests",
-      opus: "opusRequests",
-      gpt52: "gpt52Requests",
-      gpt5mini: "gpt5miniRequests",
-      gpt5nano: "gpt5nanoRequests",
-    } as const;
-    const modelKey = modelKeyMap[args.model];
-    updates[modelKey] = ((usage[modelKey] as number) ?? 0) + 1;
-
-    // Increment extended thinking if applicable
-    if (args.isExtendedThinking) {
-      updates.extendedThinkingRequests = usage.extendedThinkingRequests + 1;
-    }
-
-    // Increment request type counter
-    if (args.requestType === "organize") {
-      updates.organizeRequests = usage.organizeRequests + 1;
-    } else if (args.requestType === "rename") {
-      updates.renameRequests = usage.renameRequests + 1;
-    }
-
-    await ctx.db.patch(usage._id, updates);
-    return { success: true };
+    return await recordUsageForUser(ctx, user._id, args.model, args.isExtendedThinking, args.requestType);
   },
 });
+
+/**
+ * Record API usage by Clerk user ID (fallback for desktop auth when JWT expires)
+ * This is used when the JWT auth fails but we still need to track usage
+ */
+export const recordUsageByClerkId = mutation({
+  args: {
+    clerkUserId: v.string(),
+    model: v.union(
+      v.literal("haiku"),
+      v.literal("sonnet"),
+      v.literal("opus"),
+      v.literal("gpt52"),
+      v.literal("gpt5mini"),
+      v.literal("gpt5nano")
+    ),
+    isExtendedThinking: v.optional(v.boolean()),
+    requestType: v.optional(
+      v.union(v.literal("chat"), v.literal("organize"), v.literal("rename"))
+    ),
+  },
+  handler: async (ctx, args) => {
+    // Validate clerk user ID format (basic sanity check)
+    if (!args.clerkUserId || !args.clerkUserId.startsWith("user_")) {
+      throw new Error("Invalid Clerk user ID format");
+    }
+
+    // Try to find user by clerkId index first (fast path)
+    let user = await ctx.db
+      .query("users")
+      .withIndex("by_clerk_id", (q) => q.eq("clerkId", args.clerkUserId))
+      .first();
+
+    // Fallback: try finding by tokenIdentifier suffix (for users created before clerkId field)
+    if (!user) {
+      const allUsers = await ctx.db.query("users").collect();
+      const matchedUser = allUsers.find(u =>
+        u.tokenIdentifier?.endsWith(`|${args.clerkUserId}`)
+      );
+      if (matchedUser) {
+        // Backfill the clerkId for future lookups
+        await ctx.db.patch(matchedUser._id, { clerkId: args.clerkUserId });
+        console.log(`[recordUsageByClerkId] Backfilled clerkId for user ${matchedUser._id}`);
+        user = matchedUser;
+      }
+    }
+
+    if (!user) {
+      console.error(`[recordUsageByClerkId] User not found for clerkId: ${args.clerkUserId}`);
+      throw new Error("User not found");
+    }
+
+    return await recordUsageForUser(ctx, user._id, args.model, args.isExtendedThinking, args.requestType);
+  },
+});
+
+/**
+ * Internal helper to record usage for a user
+ */
+async function recordUsageForUser(
+  ctx: { db: any },
+  userId: any,
+  model: "haiku" | "sonnet" | "opus" | "gpt52" | "gpt5mini" | "gpt5nano",
+  isExtendedThinking?: boolean,
+  requestType?: "chat" | "organize" | "rename"
+) {
+  const today = getUTCDate();
+  const now = Date.now();
+
+  // Get or create daily usage record
+  let usage = await ctx.db
+    .query("dailyUsage")
+    .withIndex("by_user_date", (q: any) => q.eq("userId", userId).eq("date", today))
+    .unique();
+
+  if (!usage) {
+    // Create new daily record
+    const usageId = await ctx.db.insert("dailyUsage", {
+      userId: userId,
+      date: today,
+      haikuRequests: 0,
+      sonnetRequests: 0,
+      opusRequests: 0,
+      extendedThinkingRequests: 0,
+      organizeRequests: 0,
+      renameRequests: 0,
+      // GPT models
+      gpt52Requests: 0,
+      gpt5miniRequests: 0,
+      gpt5nanoRequests: 0,
+      updatedAt: now,
+    });
+    usage = await ctx.db.get(usageId);
+  }
+
+  if (!usage) throw new Error("Failed to get usage record");
+
+  // Build update object
+  const updates: Record<string, number> = { updatedAt: now };
+
+  // Increment model counter
+  const modelKeyMap = {
+    haiku: "haikuRequests",
+    sonnet: "sonnetRequests",
+    opus: "opusRequests",
+    gpt52: "gpt52Requests",
+    gpt5mini: "gpt5miniRequests",
+    gpt5nano: "gpt5nanoRequests",
+  } as const;
+  const modelKey = modelKeyMap[model];
+  updates[modelKey] = ((usage[modelKey] as number) ?? 0) + 1;
+
+  // Increment extended thinking if applicable
+  if (isExtendedThinking) {
+    updates.extendedThinkingRequests = usage.extendedThinkingRequests + 1;
+  }
+
+  // Increment request type counter
+  if (requestType === "organize") {
+    updates.organizeRequests = usage.organizeRequests + 1;
+  } else if (requestType === "rename") {
+    updates.renameRequests = usage.renameRequests + 1;
+  }
+
+  await ctx.db.patch(usage._id, updates);
+  console.log(`[recordUsage] Recorded ${model} usage for user ${userId}`);
+  return { success: true };
+}
 
 /**
  * Link Stripe customer to user (called during checkout setup)
@@ -622,5 +692,118 @@ export const cleanupOldUsageRecords = internalMutation({
     }
 
     return { deleted: oldRecords.length };
+  },
+});
+
+/**
+ * Reset all usage for a user by email (admin function)
+ * Deletes all dailyUsage records for the user
+ */
+export const resetUserUsageByEmail = internalMutation({
+  args: {
+    email: v.string(),
+  },
+  handler: async (ctx, args) => {
+    // Find user by email
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_email", (q) => q.eq("email", args.email))
+      .unique();
+
+    if (!user) {
+      return { success: false, reason: `User not found: ${args.email}` };
+    }
+
+    // Get all daily usage records for this user
+    const usageRecords = await ctx.db
+      .query("dailyUsage")
+      .withIndex("by_user_date", (q) => q.eq("userId", user._id))
+      .collect();
+
+    // Delete all usage records
+    for (const record of usageRecords) {
+      await ctx.db.delete(record._id);
+    }
+
+    console.log(`Reset usage for ${args.email}: deleted ${usageRecords.length} records`);
+    return { success: true, deleted: usageRecords.length, userId: user._id };
+  },
+});
+
+/**
+ * Get user info by email (admin helper)
+ */
+export const getUserInfoByEmail = internalQuery({
+  args: {
+    email: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_email", (q) => q.eq("email", args.email))
+      .unique();
+
+    if (!user) {
+      return { success: false, reason: `User not found: ${args.email}` };
+    }
+
+    // Extract clerkId from tokenIdentifier if not already set
+    let clerkId = user.clerkId;
+    if (!clerkId && user.tokenIdentifier) {
+      const parts = user.tokenIdentifier.split("|");
+      const lastPart = parts[parts.length - 1];
+      if (lastPart?.startsWith("user_")) {
+        clerkId = lastPart;
+      }
+    }
+
+    return {
+      success: true,
+      userId: user._id,
+      email: user.email,
+      name: user.name,
+      tokenIdentifier: user.tokenIdentifier,
+      clerkId: clerkId ?? null,
+      hasClerkIdField: !!user.clerkId,
+    };
+  },
+});
+
+/**
+ * Backfill clerkId for a user by email (admin helper)
+ */
+export const backfillClerkIdByEmail = internalMutation({
+  args: {
+    email: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_email", (q) => q.eq("email", args.email))
+      .unique();
+
+    if (!user) {
+      return { success: false, reason: `User not found: ${args.email}` };
+    }
+
+    if (user.clerkId) {
+      return { success: true, alreadySet: true, clerkId: user.clerkId };
+    }
+
+    // Extract clerkId from tokenIdentifier
+    if (!user.tokenIdentifier) {
+      return { success: false, reason: "User has no tokenIdentifier" };
+    }
+
+    const parts = user.tokenIdentifier.split("|");
+    const clerkId = parts[parts.length - 1];
+
+    if (!clerkId?.startsWith("user_")) {
+      return { success: false, reason: `Could not extract clerkId from tokenIdentifier: ${user.tokenIdentifier}` };
+    }
+
+    await ctx.db.patch(user._id, { clerkId });
+    console.log(`Backfilled clerkId for ${args.email}: ${clerkId}`);
+    return { success: true, clerkId, backfilled: true };
   },
 });

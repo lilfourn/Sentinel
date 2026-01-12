@@ -6,12 +6,14 @@ export default defineSchema({
   users: defineTable({
     name: v.string(),
     email: v.string(),
-    tokenIdentifier: v.string(), // From Clerk (e.g., "clerk|user_xxx")
+    tokenIdentifier: v.string(), // From Clerk (e.g., "https://clerk.xxx|user_xxx")
+    clerkId: v.optional(v.string()), // Just the Clerk user ID (e.g., "user_xxx") for direct lookup
     avatarUrl: v.optional(v.string()),
     createdAt: v.number(),
   })
     .index("by_token", ["tokenIdentifier"])
-    .index("by_email", ["email"]),
+    .index("by_email", ["email"])
+    .index("by_clerk_id", ["clerkId"]),
 
   // User settings - synced across devices
   userSettings: defineTable({

@@ -2,6 +2,16 @@ import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 
 /**
+ * Extract Clerk user ID from tokenIdentifier
+ * tokenIdentifier format: "https://clerk.app-sentinel.dev|user_xxx"
+ */
+function extractClerkId(tokenIdentifier: string): string | undefined {
+  const parts = tokenIdentifier.split("|");
+  const clerkId = parts[parts.length - 1];
+  return clerkId?.startsWith("user_") ? clerkId : undefined;
+}
+
+/**
  * Get or create user from Clerk identity
  * Called on first login to ensure user exists in our database
  */
@@ -13,6 +23,9 @@ export const getOrCreateUser = mutation({
       throw new Error("Not authenticated");
     }
 
+    // Extract clerk ID for direct lookups
+    const clerkId = extractClerkId(identity.tokenIdentifier);
+
     // Check if user already exists
     const existingUser = await ctx.db
       .query("users")
@@ -20,16 +33,23 @@ export const getOrCreateUser = mutation({
       .unique();
 
     if (existingUser) {
-      // Update name/email if changed
-      if (
-        existingUser.name !== identity.name ||
-        existingUser.email !== identity.email
-      ) {
-        await ctx.db.patch(existingUser._id, {
-          name: identity.name ?? existingUser.name,
-          email: identity.email ?? existingUser.email,
-          avatarUrl: identity.pictureUrl,
-        });
+      // Update name/email/clerkId if changed
+      const updates: Record<string, string | undefined> = {};
+      if (existingUser.name !== identity.name) {
+        updates.name = identity.name ?? existingUser.name;
+      }
+      if (existingUser.email !== identity.email) {
+        updates.email = identity.email ?? existingUser.email;
+      }
+      if (identity.pictureUrl) {
+        updates.avatarUrl = identity.pictureUrl;
+      }
+      // Backfill clerkId if missing
+      if (!existingUser.clerkId && clerkId) {
+        updates.clerkId = clerkId;
+      }
+      if (Object.keys(updates).length > 0) {
+        await ctx.db.patch(existingUser._id, updates);
       }
       return existingUser._id;
     }
@@ -39,6 +59,7 @@ export const getOrCreateUser = mutation({
       name: identity.name ?? "User",
       email: identity.email ?? "",
       tokenIdentifier: identity.tokenIdentifier,
+      clerkId, // Store for direct lookups
       avatarUrl: identity.pictureUrl,
       createdAt: Date.now(),
     });
