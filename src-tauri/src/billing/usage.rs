@@ -18,7 +18,6 @@ use super::types::DailyUsage;
 const VALID_MODEL_COLUMNS: &[&str] = &[
     "haiku_requests",
     "sonnet_requests",
-    "opus_requests",
     "gpt52_requests",
     "gpt5mini_requests",
     "gpt5nano_requests",
@@ -173,8 +172,6 @@ impl UsageTracker {
             "haiku_requests"
         } else if model.contains("sonnet") {
             "sonnet_requests"
-        } else if model.contains("opus") {
-            "opus_requests"
         } else if model.starts_with("gpt-5.2") {
             "gpt52_requests"
         } else if model.starts_with("gpt-5-mini") {
