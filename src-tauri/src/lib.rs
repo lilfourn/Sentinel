@@ -68,6 +68,7 @@ pub fn run() {
     // Build base Tauri app
     // Use localhost plugin in release builds to serve via HTTP (Clerk requires this)
     // Port 12753 chosen to avoid conflicts with common dev ports
+    // NOTE: Remote access for localhost is configured via capabilities in default.json
     #[cfg(not(debug_assertions))]
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_localhost::Builder::new(12753u16).build());

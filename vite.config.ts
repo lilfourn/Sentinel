@@ -55,8 +55,10 @@ export default defineConfig(async () => ({
 
   // === ESBUILD OPTIONS ===
   esbuild: {
-    // Remove console.log and debugger in production
-    drop: isProd ? ['console', 'debugger'] : [],
+    // Only remove debugger in production - keep console.warn/error for error visibility
+    drop: isProd ? ['debugger'] : [],
+    // Remove console.log but keep warn/error for production debugging
+    pure: isProd ? ['console.log'] : [],
     legalComments: 'none',
   },
 

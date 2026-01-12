@@ -3,11 +3,19 @@
   "identifier": "default",
   "description": "Sentinel File Manager capabilities",
   "windows": ["main"],
+  "remote": {
+    "urls": ["http://localhost:12753/*", "http://127.0.0.1:12753/*"]
+  },
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
     "core:window:allow-set-focus",
     "core:window:allow-show",
+    "core:event:default",
+    "core:event:allow-emit",
+    "core:event:allow-emit-to",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
     "opener:default",
     "fs:default",
     "fs:allow-read",

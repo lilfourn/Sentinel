@@ -3,7 +3,7 @@ import { persist } from 'zustand/middleware';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, emit, type UnlistenFn } from '@tauri-apps/api/event';
 import { useSubscriptionStore, chatModelToSubscriptionModel } from './subscription-store';
-import { showInfo } from './toast-store';
+import { showInfo, showError } from './toast-store';
 
 /** Auto-recovery timeout for error state (only if user hasn't interacted) */
 const ERROR_AUTO_RECOVERY_MS = 30000;
@@ -329,91 +329,81 @@ export const useChatStore = create<ChatState & ChatActions>()(
     set({ _activeCleanup: cleanupListeners });
 
     try {
-      // Listen for streaming tokens
-      unlistenToken = await listen<{ chunk: string }>('chat:token', (event) => {
-        // Verify this is for the active stream
-        const { currentStreamId } = get();
-        if (currentStreamId !== assistantMessage.id) return;
+      // CRITICAL: Register ALL event listeners BEFORE invoking the backend command
+      // This prevents race conditions where events are emitted before listeners are ready
+      const [tokenUn, thinkingUn, thoughtUn, completeUn, errorUn, limitUn] = await Promise.all([
+        // Listen for streaming tokens
+        listen<{ chunk: string }>('chat:token', (event) => {
+          const { currentStreamId } = get();
+          if (currentStreamId !== assistantMessage.id) return;
+          get()._appendContent(assistantMessage.id, event.payload.chunk);
+          set({ status: 'streaming' });
+        }),
 
-        get()._appendContent(assistantMessage.id, event.payload.chunk);
-        set({ status: 'streaming' });
-      });
+        // Listen for extended thinking
+        listen<{ status: string; chunk?: string; content?: string }>('chat:thinking', (event) => {
+          const { currentStreamId } = get();
+          if (currentStreamId !== assistantMessage.id) return;
+          const { status, chunk, content } = event.payload;
+          if (status === 'started') {
+            set((state) => ({
+              messages: state.messages.map((m) =>
+                m.id === assistantMessage.id ? { ...m, isThinking: true, thinking: '' } : m
+              ),
+            }));
+          } else if (status === 'streaming' && chunk) {
+            get()._appendThinking(assistantMessage.id, chunk);
+          } else if (status === 'complete') {
+            get()._finishThinking(assistantMessage.id, content);
+          }
+        }),
 
-      // Listen for extended thinking
-      unlistenThinking = await listen<{ status: string; chunk?: string; content?: string }>('chat:thinking', (event) => {
-        // Verify this is for the active stream
-        const { currentStreamId } = get();
-        if (currentStreamId !== assistantMessage.id) return;
+        // Listen for thought steps (tool usage)
+        listen<ThoughtStep>('chat:thought', (event) => {
+          const { currentStreamId } = get();
+          if (currentStreamId !== assistantMessage.id) return;
+          const thought = event.payload;
+          const existingThought = get().messages
+            .find(m => m.id === assistantMessage.id)?.thoughts
+            ?.find(t => t.id === thought.id);
+          if (existingThought) {
+            get()._updateThought(assistantMessage.id, thought.id, thought);
+          } else {
+            get()._addThought(assistantMessage.id, thought);
+          }
+        }),
 
-        const { status, chunk, content } = event.payload;
-        if (status === 'started') {
-          // Mark message as thinking
-          set((state) => ({
-            messages: state.messages.map((m) =>
-              m.id === assistantMessage.id ? { ...m, isThinking: true, thinking: '' } : m
-            ),
-          }));
-        } else if (status === 'streaming' && chunk) {
-          // Append thinking chunk
-          get()._appendThinking(assistantMessage.id, chunk);
-        } else if (status === 'complete') {
-          // Finish thinking
-          get()._finishThinking(assistantMessage.id, content);
-        }
-      });
+        // Listen for completion
+        listen('chat:complete', () => {
+          get()._finishStream(assistantMessage.id);
+          useSubscriptionStore.getState().incrementUsage(modelType, extendedThinking);
+          useSubscriptionStore.getState().refreshUsage();
+          cleanupListeners();
+          emit('usage:record-chat', { model: modelType, extendedThinking });
+        }),
 
-      // Listen for thought steps (tool usage)
-      unlistenThought = await listen<ThoughtStep>('chat:thought', (event) => {
-        // Verify this is for the active stream
-        const { currentStreamId } = get();
-        if (currentStreamId !== assistantMessage.id) return;
+        // Listen for errors
+        listen<{ message: string }>('chat:error', (event) => {
+          get()._setError(event.payload.message);
+          get()._finishStream(assistantMessage.id);
+          cleanupListeners();
+        }),
 
-        const thought = event.payload;
-        const existingThought = get().messages
-          .find(m => m.id === assistantMessage.id)?.thoughts
-          ?.find(t => t.id === thought.id);
+        // Listen for limit errors (subscription/quota exceeded)
+        listen<{ reason: string; upgradeUrl?: string }>('chat:limit-error', (event) => {
+          get()._setError(event.payload.reason);
+          get()._finishStream(assistantMessage.id);
+          cleanupListeners();
+        }),
+      ]);
 
-        if (existingThought) {
-          // Update existing thought
-          get()._updateThought(assistantMessage.id, thought.id, thought);
-        } else {
-          // Add new thought
-          get()._addThought(assistantMessage.id, thought);
-        }
-      });
-
-      // Listen for completion - cleanup listeners HERE, not in finally
-      unlistenComplete = await listen('chat:complete', () => {
-        get()._finishStream(assistantMessage.id);
-
-        // Record usage ONLY on successful completion (not optimistically)
-        // This prevents double-charging when users retry failed requests
-        useSubscriptionStore.getState().incrementUsage(modelType, extendedThinking);
-        useSubscriptionStore.getState().refreshUsage();
-        cleanupListeners(); // Cleanup after completion
-
-        // Emit event for UsageSync to record in Convex
-        emit('usage:record-chat', {
-          model: modelType,
-          extendedThinking,
-        });
-      });
-
-      // Listen for errors - cleanup listeners HERE, not in finally
-      unlistenError = await listen<{ message: string }>('chat:error', (event) => {
-        get()._setError(event.payload.message);
-        get()._finishStream(assistantMessage.id);
-        // No usage recorded for failed requests (we only increment on success)
-        cleanupListeners();
-      });
-
-      // Listen for limit errors (subscription/quota exceeded)
-      unlistenLimitError = await listen<{ reason: string; upgradeUrl?: string }>('chat:limit-error', (event) => {
-        get()._setError(event.payload.reason);
-        get()._finishStream(assistantMessage.id);
-        // No usage recorded for denied requests (we only increment on success)
-        cleanupListeners();
-      });
+      // Assign unlisten functions after Promise.all completes
+      unlistenToken = tokenUn;
+      unlistenThinking = thinkingUn;
+      unlistenThought = thoughtUn;
+      unlistenComplete = completeUn;
+      unlistenError = errorUn;
+      unlistenLimitError = limitUn;
 
       // Convert context items to format expected by backend
       const contextItems = activeContext.map(c => ({
@@ -456,7 +446,21 @@ export const useChatStore = create<ChatState & ChatActions>()(
     } catch (err) {
       // Only cleanup in catch if invoke() itself failed (not streaming events)
       const errorMessage = err instanceof Error ? err.message : String(err);
-      get()._setError(errorMessage);
+      console.error('[ChatStore] invoke failed:', err);
+
+      // Provide more helpful error messages for common issues
+      let displayError = errorMessage;
+      if (errorMessage.includes('CLAUDE_API_KEY') || errorMessage.includes('not configured')) {
+        displayError = 'API key not configured. Please contact support.';
+      } else if (errorMessage.includes('401') || errorMessage.includes('Authentication')) {
+        displayError = 'Authentication failed. Please check your API key.';
+      } else if (errorMessage.includes('429') || errorMessage.includes('rate')) {
+        displayError = 'Rate limit exceeded. Please wait a moment and try again.';
+      } else if (errorMessage.includes('network') || errorMessage.includes('fetch')) {
+        displayError = 'Network error. Please check your internet connection.';
+      }
+
+      get()._setError(displayError);
       get()._finishStream(assistantMessage.id);
       // No usage recorded for failed requests (we only increment on success)
       cleanupListeners();
@@ -637,6 +641,12 @@ export const useChatStore = create<ChatState & ChatActions>()(
   _setError: (error) => {
     const errorTime = Date.now();
     set({ status: 'error', error });
+
+    // Show user-visible error toast for production debugging
+    if (error) {
+      console.error('[ChatStore] Error:', error);
+      showError('Chat Error', error);
+    }
 
     // Auto-recovery: reset to idle after timeout ONLY if user hasn't interacted
     // This prevents clearing errors while user is actively investigating
