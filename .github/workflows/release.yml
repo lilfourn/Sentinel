@@ -16,7 +16,6 @@ on:
 
 permissions:
   contents: write
-  workflows: write
 
 env:
   CARGO_TERM_COLOR: always
