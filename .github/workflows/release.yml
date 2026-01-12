@@ -9,10 +9,6 @@ on:
       version:
         description: 'Version to release (e.g., 0.2.0)'
         required: true
-      skip_ci:
-        description: 'Skip CI checks (use for hotfixes from tested main)'
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -23,15 +19,7 @@ env:
   RUSTC_WRAPPER: sccache
 
 jobs:
-  # Run CI tests before creating release (skippable)
-  ci:
-    if: github.event_name == 'workflow_dispatch' && !inputs.skip_ci
-    uses: ./.github/workflows/ci.yml
-
   create-release:
-    needs: [ci]
-    # Run even if CI was skipped (tag push or skip_ci=true)
-    if: always() && (needs.ci.result == 'success' || needs.ci.result == 'skipped')
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.create-release.outputs.result }}
@@ -82,8 +70,6 @@ jobs:
 
   build-tauri:
     needs: create-release
-    # Must use always() to run even when ci was skipped
-    if: always() && needs.create-release.result == 'success'
     strategy:
       fail-fast: false
       matrix:
@@ -191,8 +177,6 @@ jobs:
 
   publish-release:
     needs: [create-release, build-tauri]
-    # Must use always() to run even when ci was skipped
-    if: always() && needs.create-release.result == 'success' && needs.build-tauri.result == 'success'
     runs-on: ubuntu-latest
     env:
       RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
