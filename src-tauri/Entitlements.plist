@@ -25,5 +25,9 @@
     <!-- Allow access to Music folder -->
     <key>com.apple.security.assets.music.read-write</key>
     <true/>
+
+    <!-- Network access for API calls (required even without sandbox) -->
+    <key>com.apple.security.network.client</key>
+    <true/>
 </dict>
 </plist>

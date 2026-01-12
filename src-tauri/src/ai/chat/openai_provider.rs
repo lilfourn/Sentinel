@@ -9,16 +9,16 @@ use crate::ai::chat::tool_conversion::{
 };
 use crate::ai::chat::tools::{execute_chat_tool, get_chat_tools, ChatToolResult};
 use crate::ai::credentials::CredentialManager;
+use crate::ai::http_client::openai_client;
 use futures::StreamExt;
-use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::time::sleep;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
+use std::time::Duration;
 
 use super::agent::{ChatAgentResult, ConversationMessage, TokenUsage};
 
@@ -122,8 +122,12 @@ pub async fn run_openai_chat_agent(
     }
 
     // Get API key (checks compile-time embedded key, runtime env, and keychain)
-    let api_key = CredentialManager::get_api_key("openai")
-        .map_err(|_| "OpenAI API key not configured. GPT models require an API key.".to_string())?;
+    let api_key = CredentialManager::get_api_key("openai").map_err(|e| {
+        error!(error = %e, "Failed to get OpenAI API key");
+        "OpenAI API key not configured. GPT models require an API key.".to_string()
+    })?;
+
+    info!("OpenAI API key retrieved successfully");
 
     // Hydrate context
     let hydrated: HydratedContext = hydrate_context(context_items)?;
@@ -135,11 +139,8 @@ pub async fn run_openai_chat_agent(
     let claude_tools = get_chat_tools();
     let tools = tools_to_openai_format(&claude_tools);
 
-    // Create HTTP client
-    let client = Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    // Use global HTTP client for connection pooling and TLS session reuse
+    let client = openai_client();
 
     let mut final_response = String::new();
 
@@ -170,6 +171,7 @@ pub async fn run_openai_chat_agent(
         });
 
         // Send streaming request
+        debug!(url = OPENAI_API_URL, "Sending OpenAI API request");
         let response = client
             .post(OPENAI_API_URL)
             .header("Authorization", format!("Bearer {}", api_key))
@@ -177,13 +179,19 @@ pub async fn run_openai_chat_agent(
             .json(&request_body)
             .send()
             .await
-            .map_err(|e| format!("HTTP request failed: {}", e))?;
+            .map_err(|e| {
+                error!(error = %e, "OpenAI HTTP request failed - possible network/TLS issue");
+                format!("HTTP request failed: {}. Check your network connection.", e)
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
+            error!(status = %status, error = %error_text, "OpenAI API returned error");
             return Err(format!("OpenAI API error {}: {}", status, error_text));
         }
+
+        debug!("OpenAI API request successful, processing stream");
 
         // Process streaming response
         let (finish_reason, tool_calls, text_content, iteration_usage) =

@@ -26,7 +26,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' https://clerk.app-sentinel.dev https://*.clerk.dev https://*.clerk.accounts.dev 'unsafe-inline'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; connect-src 'self' ipc: ipc://localhost tauri: https://*.convex.cloud https://api.anthropic.com https://api.stripe.com https://*.clerk.dev https://*.clerk.accounts.dev https://clerk.app-sentinel.dev wss://*.convex.cloud https://github.com https://api.github.com https://raw.githubusercontent.com; img-src 'self' data: https: blob:; font-src 'self' data:; frame-src 'self' https://*.clerk.dev https://*.clerk.accounts.dev https://clerk.app-sentinel.dev"
+      "csp": "default-src 'self'; script-src 'self' https://clerk.app-sentinel.dev https://*.clerk.dev https://*.clerk.accounts.dev 'unsafe-inline'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; connect-src 'self' ipc: ipc://localhost tauri: http://localhost:12753 https://*.convex.cloud https://api.anthropic.com https://api.openai.com https://api.stripe.com https://*.clerk.dev https://*.clerk.accounts.dev https://clerk.app-sentinel.dev wss://*.convex.cloud https://github.com https://api.github.com https://raw.githubusercontent.com; img-src 'self' data: https: blob:; font-src 'self' data:; frame-src 'self' https://*.clerk.dev https://*.clerk.accounts.dev https://clerk.app-sentinel.dev"
     }
   },
   "bundle": {
