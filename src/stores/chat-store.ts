@@ -160,7 +160,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
   model: 'claude-sonnet-4-5',
   status: 'idle',
   error: null,
-  extendedThinking: true,
+  extendedThinking: false, // Default to false - Pro users can enable it
   currentStreamId: null,
   _activeCleanup: null,
   _lastInteraction: Date.now(),
@@ -303,6 +303,12 @@ export const useChatStore = create<ChatState & ChatActions>()(
     // This prevents double-charging when users retry failed requests
     const modelType = chatModelToSubscriptionModel(model);
 
+    // IMPORTANT: Only use extendedThinking if user can actually use it
+    // Free tier users may have stale localStorage state with extendedThinking=true
+    // but they're not allowed to use it, so we force it to false
+    const canUseThinking = useSubscriptionStore.getState().canUseExtendedThinking();
+    const effectiveExtendedThinking = extendedThinking && canUseThinking;
+
     // Set up event listeners
     let unlistenToken: UnlistenFn | null = null;
     let unlistenThought: UnlistenFn | null = null;
@@ -376,10 +382,10 @@ export const useChatStore = create<ChatState & ChatActions>()(
         // Listen for completion
         listen('chat:complete', () => {
           get()._finishStream(assistantMessage.id);
-          useSubscriptionStore.getState().incrementUsage(modelType, extendedThinking);
+          useSubscriptionStore.getState().incrementUsage(modelType, effectiveExtendedThinking);
           useSubscriptionStore.getState().refreshUsage();
           cleanupListeners();
-          emit('usage:record-chat', { model: modelType, extendedThinking });
+          emit('usage:record-chat', { model: modelType, extendedThinking: effectiveExtendedThinking });
         }),
 
         // Listen for errors
@@ -428,13 +434,14 @@ export const useChatStore = create<ChatState & ChatActions>()(
       // The request param maps to ChatStreamRequest struct with camelCase fields
       // Get userId from subscription store for billing tracking
       const userId = useSubscriptionStore.getState().userId;
+
       await invoke('chat_stream', {
         request: {
           message: text,
           contextItems,
           model,
           history: conversationHistory,
-          extendedThinking,
+          extendedThinking: effectiveExtendedThinking,
           userId,
         },
       });
