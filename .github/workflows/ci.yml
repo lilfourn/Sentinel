@@ -10,9 +10,15 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  SCCACHE_GHA_ENABLED: true
+  RUSTC_WRAPPER: sccache
+
 jobs:
-  lint-and-type-check:
-    name: Lint & Type Check
+  # Combined frontend job: lint, type check, and tests
+  frontend:
+    name: Frontend (Lint, Types, Tests)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,49 +35,12 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
-  test-frontend:
-    name: Frontend Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
       - name: Run tests
         run: npm run test:run
 
-  test-backend:
-    name: Backend Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-
-      - name: Run Rust tests
-        working-directory: src-tauri
-        run: cargo test --all-features
-
-  check-rust:
-    name: Rust Check & Clippy
+  # Combined Rust job: tests and clippy
+  rust:
+    name: Rust (Tests, Clippy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -81,26 +50,32 @@ jobs:
         with:
           components: clippy
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.4
+
+      - name: Cache apt packages
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          version: 1.0
+
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          shared-key: ci-ubuntu
 
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-
-      - name: Cargo check
+      - name: Run Rust tests
         working-directory: src-tauri
-        run: cargo check --all-features
+        run: cargo test --all-features
 
       - name: Clippy
         working-directory: src-tauri
         run: cargo clippy --all-features -- -D warnings 2>/dev/null || echo "Clippy warnings detected (non-blocking)"
 
+  # Build check on multiple platforms
   build-check:
-    name: Build Check
+    name: Build Check (${{ matrix.platform }})
     runs-on: ${{ matrix.platform }}
     strategy:
       fail-fast: false
@@ -121,16 +96,21 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.4
+
+      - name: Cache apt packages
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          version: 1.0
+
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-
-      - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          shared-key: ci-${{ matrix.platform }}
 
       - name: Install dependencies
         run: npm ci

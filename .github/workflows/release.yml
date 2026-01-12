@@ -9,17 +9,29 @@ on:
       version:
         description: 'Version to release (e.g., 0.2.0)'
         required: true
+      skip_ci:
+        description: 'Skip CI checks (use for hotfixes from tested main)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+  SCCACHE_GHA_ENABLED: true
+  RUSTC_WRAPPER: sccache
+
 jobs:
-  # Run CI tests before creating release
+  # Run CI tests before creating release (skippable)
   ci:
+    if: github.event_name == 'workflow_dispatch' && !inputs.skip_ci
     uses: ./.github/workflows/ci.yml
 
   create-release:
-    needs: ci
+    needs: [ci]
+    # Run even if CI was skipped (tag push or skip_ci=true)
+    if: always() && (needs.ci.result == 'success' || needs.ci.result == 'skipped')
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.create-release.outputs.result }}
@@ -106,7 +118,27 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install dependencies (Ubuntu)
+      # CRITICAL: sccache for compilation caching across workflows
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.4
+
+      # CRITICAL: Rust dependency caching (saves 10-15 min per build)
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: release-${{ matrix.target }}
+          cache-targets: true
+
+      # Cache apt packages on Ubuntu
+      - name: Cache apt packages
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          version: 1.0
+
+      - name: Install dependencies (Ubuntu fallback)
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
