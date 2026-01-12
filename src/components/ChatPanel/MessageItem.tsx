@@ -152,6 +152,78 @@ function extractTextFromChildren(children: ReactNode): string {
   return '';
 }
 
+/**
+ * Markdown components extracted to module scope to prevent recreation on every render
+ * This is a critical performance optimization for streaming messages
+ */
+const markdownComponents = {
+  // Customize link styling with XSS protection
+  a: ({ href, children }: { href?: string; children?: ReactNode }) => {
+    const safeHref = sanitizeUrl(href);
+    if (!safeHref) {
+      return <span className="text-gray-400">{children}</span>;
+    }
+    return (
+      <a
+        href={safeHref}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-blue-400 hover:underline"
+      >
+        {children}
+      </a>
+    );
+  },
+  // Pre blocks (wraps code blocks) - use CodeBlock component with copy button
+  pre: ({ children }: { children?: ReactNode }) => (
+    <CodeBlock>{children}</CodeBlock>
+  ),
+  // Code - inline vs block styling
+  code: ({ className, children }: { className?: string; children?: ReactNode }) => {
+    const content = String(children || '');
+    const isBlock = !!className || content.includes('\n');
+
+    return isBlock ? (
+      <code className="text-xs font-mono text-gray-200 block whitespace-pre">
+        {children}
+      </code>
+    ) : (
+      <code className="bg-white/10 px-1.5 py-0.5 rounded text-xs font-mono text-orange-300">
+        {children}
+      </code>
+    );
+  },
+  // Paragraphs - clear separation from code blocks
+  p: ({ children }: { children?: ReactNode }) => (
+    <p className="mb-4 last:mb-0 leading-relaxed">{children}</p>
+  ),
+  // Lists
+  ul: ({ children }: { children?: ReactNode }) => (
+    <ul className="list-disc pl-4 mb-4 space-y-1">{children}</ul>
+  ),
+  ol: ({ children }: { children?: ReactNode }) => (
+    <ol className="list-decimal pl-4 mb-4 space-y-1">{children}</ol>
+  ),
+  // Headings
+  h1: ({ children }: { children?: ReactNode }) => (
+    <h1 className="text-lg font-semibold mb-3 mt-4 first:mt-0">{children}</h1>
+  ),
+  h2: ({ children }: { children?: ReactNode }) => (
+    <h2 className="text-base font-semibold mb-2 mt-4 first:mt-0">{children}</h2>
+  ),
+  h3: ({ children }: { children?: ReactNode }) => (
+    <h3 className="text-sm font-semibold mb-2 mt-3 first:mt-0">{children}</h3>
+  ),
+  // Block quotes
+  blockquote: ({ children }: { children?: ReactNode }) => (
+    <blockquote className="border-l-2 border-gray-500 pl-3 my-3 text-gray-400 italic">
+      {children}
+    </blockquote>
+  ),
+  // Horizontal rule
+  hr: () => <hr className="my-4 border-white/10" />,
+};
+
 export const MessageItem = memo(function MessageItem({ message }: MessageItemProps) {
   const isUser = message.role === 'user';
   const isAssistant = message.role === 'assistant';
@@ -253,71 +325,7 @@ export const MessageItem = memo(function MessageItem({ message }: MessageItemPro
         <StreamingIndicator isStreaming={!!message.isStreaming && !!message.content}>
           <div className="prose prose-sm prose-invert max-w-none break-words">
             {message.content ? (
-              <Markdown
-                components={{
-                  // Customize link styling with XSS protection
-                  a: ({ href, children }) => {
-                    const safeHref = sanitizeUrl(href);
-                    if (!safeHref) {
-                      // Render as plain text if URL is blocked
-                      return <span className="text-gray-400">{children}</span>;
-                    }
-                    return (
-                      <a
-                        href={safeHref}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-400 hover:underline"
-                      >
-                        {children}
-                      </a>
-                    );
-                  },
-                  // Pre blocks (wraps code blocks) - use CodeBlock component with copy button
-                  pre: ({ children }) => (
-                    <CodeBlock>{children}</CodeBlock>
-                  ),
-                  // Code - inline vs block styling
-                  code: ({ className, children }) => {
-                    // Determine if block code:
-                    // 1. Has className (fenced code with language like ```js)
-                    // 2. Content contains newlines (plain fenced code ```)
-                    const content = String(children || '');
-                    const isBlock = !!className || content.includes('\n');
-
-                    return isBlock ? (
-                      // Block code inside pre - just style the text
-                      <code className="text-xs font-mono text-gray-200 block whitespace-pre">
-                        {children}
-                      </code>
-                    ) : (
-                      // Inline code
-                      <code className="bg-white/10 px-1.5 py-0.5 rounded text-xs font-mono text-orange-300">
-                        {children}
-                      </code>
-                    );
-                  },
-                  // Paragraphs - clear separation from code blocks
-                  p: ({ children }) => (
-                    <p className="mb-4 last:mb-0 leading-relaxed">{children}</p>
-                  ),
-                  // Lists
-                  ul: ({ children }) => <ul className="list-disc pl-4 mb-4 space-y-1">{children}</ul>,
-                  ol: ({ children }) => <ol className="list-decimal pl-4 mb-4 space-y-1">{children}</ol>,
-                  // Headings
-                  h1: ({ children }) => <h1 className="text-lg font-semibold mb-3 mt-4 first:mt-0">{children}</h1>,
-                  h2: ({ children }) => <h2 className="text-base font-semibold mb-2 mt-4 first:mt-0">{children}</h2>,
-                  h3: ({ children }) => <h3 className="text-sm font-semibold mb-2 mt-3 first:mt-0">{children}</h3>,
-                  // Block quotes
-                  blockquote: ({ children }) => (
-                    <blockquote className="border-l-2 border-gray-500 pl-3 my-3 text-gray-400 italic">
-                      {children}
-                    </blockquote>
-                  ),
-                  // Horizontal rule
-                  hr: () => <hr className="my-4 border-white/10" />,
-                }}
-              >
+              <Markdown components={markdownComponents}>
                 {message.content}
               </Markdown>
             ) : message.isStreaming ? (

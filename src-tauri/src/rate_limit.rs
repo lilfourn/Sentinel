@@ -2,17 +2,17 @@
 //!
 //! Provides sliding window rate limiting to prevent API flooding.
 //! Each user has their own request history tracked independently.
+//! Uses DashMap for lock-free concurrent access.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
+use dashmap::DashMap;
 use std::time::{Duration, Instant};
 use tracing::warn;
 
-/// Sliding window rate limiter
+/// Sliding window rate limiter using lock-free DashMap
 /// Tracks requests per user within a time window
 pub struct RateLimiter {
-    /// Map of user_id -> list of request timestamps
-    requests: Mutex<HashMap<String, Vec<Instant>>>,
+    /// Map of user_id -> list of request timestamps (lock-free)
+    requests: DashMap<String, Vec<Instant>>,
     /// Maximum requests allowed in the window
     max_requests: usize,
     /// Time window for rate limiting
@@ -27,7 +27,7 @@ impl RateLimiter {
     /// * `window_secs` - Duration of the sliding window in seconds
     pub fn new(max_requests: usize, window_secs: u64) -> Self {
         Self {
-            requests: Mutex::new(HashMap::new()),
+            requests: DashMap::new(),
             max_requests,
             window: Duration::from_secs(window_secs),
         }
@@ -37,43 +37,44 @@ impl RateLimiter {
     ///
     /// Returns `true` if the request is allowed, `false` if rate limited
     pub fn check_and_record(&self, user_id: &str) -> bool {
-        let mut requests = self.requests.lock().unwrap_or_else(|poisoned| {
-            warn!("Rate limiter mutex poisoned, recovering");
-            poisoned.into_inner()
-        });
-
         let now = Instant::now();
-        let entry = requests.entry(user_id.to_string()).or_default();
+        let window = self.window;
+        let max_requests = self.max_requests;
+
+        let mut entry = self.requests.entry(user_id.to_string()).or_default();
+        let timestamps = entry.value_mut();
 
         // Remove requests outside the window
-        entry.retain(|t| now.duration_since(*t) < self.window);
+        timestamps.retain(|t| now.duration_since(*t) < window);
 
-        if entry.len() >= self.max_requests {
+        if timestamps.len() >= max_requests {
             warn!(
                 user = user_id,
-                requests = entry.len(),
-                max = self.max_requests,
+                requests = timestamps.len(),
+                max = max_requests,
                 "Rate limit exceeded"
             );
             return false;
         }
 
-        entry.push(now);
+        timestamps.push(now);
         true
     }
 
     /// Get remaining requests for a user
     #[allow(dead_code)]
     pub fn remaining(&self, user_id: &str) -> usize {
-        let requests = self.requests.lock().unwrap_or_else(|poisoned| {
-            warn!("Rate limiter mutex poisoned, recovering");
-            poisoned.into_inner()
-        });
-
         let now = Instant::now();
-        let count = requests
+        let count = self
+            .requests
             .get(user_id)
-            .map(|times| times.iter().filter(|t| now.duration_since(**t) < self.window).count())
+            .map(|entry| {
+                entry
+                    .value()
+                    .iter()
+                    .filter(|t| now.duration_since(**t) < self.window)
+                    .count()
+            })
             .unwrap_or(0);
 
         self.max_requests.saturating_sub(count)
@@ -83,16 +84,12 @@ impl RateLimiter {
     /// Should be called periodically
     #[allow(dead_code)]
     pub fn cleanup(&self) {
-        let mut requests = self.requests.lock().unwrap_or_else(|poisoned| {
-            warn!("Rate limiter mutex poisoned, recovering");
-            poisoned.into_inner()
-        });
-
         let now = Instant::now();
+        let window = self.window;
 
         // Remove entries with no recent requests
-        requests.retain(|_, times| {
-            times.retain(|t| now.duration_since(*t) < self.window);
+        self.requests.retain(|_, times| {
+            times.retain(|t| now.duration_since(*t) < window);
             !times.is_empty()
         });
     }

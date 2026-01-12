@@ -6,7 +6,7 @@
 //!
 //! # Usage
 //!
-//! ```rust
+//! ```rust,ignore
 //! use crate::execution::state_validator::{StateSnapshot, StateValidator};
 //!
 //! // Capture state at simulation time

@@ -433,10 +433,12 @@ impl ExecutionEngine {
         }
 
         // Shared state for collecting results
-        let completed = Arc::new(Mutex::new(0usize));
-        let failed = Arc::new(Mutex::new(0usize));
-        let skipped = Arc::new(Mutex::new(0usize));
-        let renamed = Arc::new(Mutex::new(0usize));
+        // Use atomics for simple counters (lock-free, no contention)
+        let completed = Arc::new(AtomicUsize::new(0));
+        let failed = Arc::new(AtomicUsize::new(0));
+        let skipped = Arc::new(AtomicUsize::new(0));
+        let renamed = Arc::new(AtomicUsize::new(0));
+        // Vecs still need Mutex (atomics can't handle collections)
         let errors = Arc::new(Mutex::new(Vec::<String>::new()));
         let skipped_reasons = Arc::new(Mutex::new(Vec::<String>::new()));
 
@@ -484,14 +486,12 @@ impl ExecutionEngine {
                     Ok(outcome) => {
                         match outcome {
                             ExecutionOutcome::Completed => {
-                                let mut c = completed.lock().await;
-                                *c += 1;
+                                completed.fetch_add(1, Ordering::Relaxed);
                                 tracing::debug!("Operation completed successfully");
                                 true
                             }
                             ExecutionOutcome::CompletedWithRename(new_path) => {
-                                let mut r = renamed.lock().await;
-                                *r += 1;
+                                renamed.fetch_add(1, Ordering::Relaxed);
                                 tracing::debug!(
                                     new_path = %new_path.display(),
                                     "Operation completed with rename"
@@ -499,8 +499,7 @@ impl ExecutionEngine {
                                 true
                             }
                             ExecutionOutcome::Skipped(reason) => {
-                                let mut s = skipped.lock().await;
-                                *s += 1;
+                                skipped.fetch_add(1, Ordering::Relaxed);
                                 let mut sr = skipped_reasons.lock().await;
                                 sr.push(reason.clone());
                                 tracing::debug!(reason = %reason, "Operation skipped");
@@ -509,8 +508,7 @@ impl ExecutionEngine {
                         }
                     }
                     Err(err) => {
-                        let mut f = failed.lock().await;
-                        *f += 1;
+                        failed.fetch_add(1, Ordering::Relaxed);
                         let mut e = errors.lock().await;
                         e.push(err.clone());
                         tracing::debug!(error = %err, "Operation failed");
@@ -553,18 +551,17 @@ impl ExecutionEngine {
         for handle in handles {
             if let Err(join_err) = handle.await {
                 tracing::warn!(error = %join_err, "Task panicked");
-                let mut f = failed.lock().await;
-                *f += 1;
+                failed.fetch_add(1, Ordering::Relaxed);
                 let mut errs = errors.lock().await;
                 errs.push(format!("Task panicked: {}", join_err));
             }
         }
 
-        // Extract values before constructing result to avoid lifetime issues
-        let completed_val = *completed.lock().await;
-        let failed_val = *failed.lock().await;
-        let skipped_val = *skipped.lock().await;
-        let renamed_val = *renamed.lock().await;
+        // Read atomic counters (lock-free) and extract vec values
+        let completed_val = completed.load(Ordering::Relaxed);
+        let failed_val = failed.load(Ordering::Relaxed);
+        let skipped_val = skipped.load(Ordering::Relaxed);
+        let renamed_val = renamed.load(Ordering::Relaxed);
         let errors_val = errors.lock().await.clone();
         let skipped_reasons_val = skipped_reasons.lock().await.clone();
 

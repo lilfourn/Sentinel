@@ -564,13 +564,13 @@ fn get_mime_category(ext: &str) -> String {
     .to_string()
 }
 
-/// Extract prefix from filename (before first digit or underscore)
+/// Extract prefix from filename (before first digit, underscore, dash, or dot)
 fn extract_prefix(filename: &str) -> Option<String> {
     let chars: Vec<char> = filename.chars().collect();
     let mut prefix_end = 0;
 
     for (i, c) in chars.iter().enumerate() {
-        if c.is_ascii_digit() || *c == '_' || *c == '-' {
+        if c.is_ascii_digit() || *c == '_' || *c == '-' || *c == '.' {
             prefix_end = i;
             break;
         }

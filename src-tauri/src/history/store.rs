@@ -52,13 +52,20 @@ fn validate_folder_path(folder_path: &str) -> Result<PathBuf, String> {
     let canonical_str = canonical.to_string_lossy();
     for protected in PROTECTED_PATHS {
         if canonical_str == *protected || canonical_str.starts_with(&format!("{}/", protected)) {
-            // Allow user home directories within /Users or /home
-            let home_prefixes = ["/Users/", "/home/"];
-            let is_user_home = home_prefixes
+            // Allow user home directories and temp directories
+            let allowed_prefixes = [
+                "/Users/",              // macOS home dirs
+                "/home/",               // Linux home dirs
+                "/var/folders/",        // macOS temp dirs (non-canonical)
+                "/private/var/folders/",// macOS temp dirs (canonical - /var symlinks to /private/var)
+                "/tmp/",                // Linux temp dirs
+                "/private/tmp/",        // macOS temp dirs (canonical - /tmp symlinks to /private/tmp)
+            ];
+            let is_allowed = allowed_prefixes
                 .iter()
                 .any(|prefix| canonical_str.starts_with(prefix));
 
-            if !is_user_home {
+            if !is_allowed {
                 return Err(format!(
                     "Cannot operate on protected system path: {}",
                     folder_path
@@ -379,21 +386,23 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn create_test_store() -> (HistoryStore, TempDir) {
-        let temp_dir = TempDir::new().unwrap();
+    /// Create test store with history dir and target folders
+    fn create_test_store() -> (HistoryStore, TempDir, TempDir) {
+        let history_dir = TempDir::new().unwrap();
+        let target_dir = TempDir::new().unwrap();
         let store = HistoryStore {
-            history_dir: temp_dir.path().to_path_buf(),
+            history_dir: history_dir.path().to_path_buf(),
         };
-        (store, temp_dir)
+        (store, history_dir, target_dir)
     }
 
-    fn create_test_session(id: &str) -> HistorySession {
+    fn create_test_session(id: &str, target_folder: &str) -> HistorySession {
         HistorySession {
             session_id: id.to_string(),
             user_instruction: "Organize by type".to_string(),
             plan_description: "Created folders".to_string(),
             executed_at: Utc::now(),
-            target_folder: "/test/folder".to_string(),
+            target_folder: target_folder.to_string(),
             operations: vec![],
             files_affected: 5,
             undone: false,
@@ -402,43 +411,46 @@ mod tests {
 
     #[test]
     fn test_save_and_load_session() {
-        let (store, _temp_dir) = create_test_store();
-        let session = create_test_session("session-1");
+        let (store, _history_dir, target_dir) = create_test_store();
+        let folder_path = target_dir.path().to_string_lossy().to_string();
+        let session = create_test_session("session-1", &folder_path);
 
         // Save
-        store.save_session("/test/folder", session.clone()).unwrap();
+        store.save_session(&folder_path, session.clone()).unwrap();
 
         // Load
-        let history = store.load_history("/test/folder").unwrap().unwrap();
+        let history = store.load_history(&folder_path).unwrap().unwrap();
         assert_eq!(history.sessions.len(), 1);
         assert_eq!(history.sessions[0].session_id, "session-1");
     }
 
     #[test]
     fn test_has_history() {
-        let (store, _temp_dir) = create_test_store();
+        let (store, _history_dir, target_dir) = create_test_store();
+        let folder_path = target_dir.path().to_string_lossy().to_string();
 
-        assert!(!store.has_history("/test/folder"));
+        assert!(!store.has_history(&folder_path));
 
         store
-            .save_session("/test/folder", create_test_session("session-1"))
+            .save_session(&folder_path, create_test_session("session-1", &folder_path))
             .unwrap();
 
-        assert!(store.has_history("/test/folder"));
+        assert!(store.has_history(&folder_path));
     }
 
     #[test]
     fn test_session_summaries() {
-        let (store, _temp_dir) = create_test_store();
+        let (store, _history_dir, target_dir) = create_test_store();
+        let folder_path = target_dir.path().to_string_lossy().to_string();
 
         store
-            .save_session("/test/folder", create_test_session("session-1"))
+            .save_session(&folder_path, create_test_session("session-1", &folder_path))
             .unwrap();
         store
-            .save_session("/test/folder", create_test_session("session-2"))
+            .save_session(&folder_path, create_test_session("session-2", &folder_path))
             .unwrap();
 
-        let summaries = store.get_session_summaries("/test/folder").unwrap();
+        let summaries = store.get_session_summaries(&folder_path).unwrap();
         assert_eq!(summaries.len(), 2);
         // Most recent first
         assert_eq!(summaries[0].session_id, "session-2");
@@ -446,13 +458,18 @@ mod tests {
 
     #[test]
     fn test_global_index() {
-        let (store, _temp_dir) = create_test_store();
+        let (store, _history_dir, _target_dir) = create_test_store();
+        // Create two separate target directories
+        let target_a = TempDir::new().unwrap();
+        let target_b = TempDir::new().unwrap();
+        let folder_a = target_a.path().to_string_lossy().to_string();
+        let folder_b = target_b.path().to_string_lossy().to_string();
 
         store
-            .save_session("/folder/a", create_test_session("session-1"))
+            .save_session(&folder_a, create_test_session("session-1", &folder_a))
             .unwrap();
         store
-            .save_session("/folder/b", create_test_session("session-2"))
+            .save_session(&folder_b, create_test_session("session-2", &folder_b))
             .unwrap();
 
         let folders = store.list_folders().unwrap();
@@ -461,17 +478,18 @@ mod tests {
 
     #[test]
     fn test_delete_history() {
-        let (store, _temp_dir) = create_test_store();
+        let (store, _history_dir, target_dir) = create_test_store();
+        let folder_path = target_dir.path().to_string_lossy().to_string();
 
         store
-            .save_session("/test/folder", create_test_session("session-1"))
+            .save_session(&folder_path, create_test_session("session-1", &folder_path))
             .unwrap();
 
-        assert!(store.has_history("/test/folder"));
+        assert!(store.has_history(&folder_path));
 
-        store.delete_history("/test/folder").unwrap();
+        store.delete_history(&folder_path).unwrap();
 
-        assert!(!store.has_history("/test/folder"));
+        assert!(!store.has_history(&folder_path));
         assert!(store.list_folders().unwrap().is_empty());
     }
 }

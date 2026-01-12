@@ -41,8 +41,8 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
 # Async stream processing for SSE
 futures = "0.3"
 
-# Async runtime
-tokio = { version = "1", features = ["full"] }
+# Async runtime (optimized features instead of "full")
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util"] }
 
 # Platform directories (~/Downloads, etc.)
 dirs = "6"
@@ -110,6 +110,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Lazy static initialization for global singletons
 once_cell = "1.19"
 
+# Lock-free concurrent hashmap for rate limiting
+dashmap = "6"
+
 # SQLite for content cache
 rusqlite = { version = "0.32", features = ["bundled"] }
 dotenvy = "0.15.7"
@@ -141,4 +144,31 @@ block2 = "0.5"
 [dev-dependencies]
 # Temporary directories for tests
 tempfile = "3"
+
+# === PROFILE OPTIMIZATIONS ===
+
+[profile.dev]
+incremental = true
+opt-level = 0
+
+[profile.dev.package."*"]
+# Optimize dependencies even in dev for faster runtime
+opt-level = 2
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+[profile.release.package."*"]
+opt-level = 3
+
+# Fast release builds for testing (use with: cargo build --profile release-fast)
+[profile.release-fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+strip = false
 

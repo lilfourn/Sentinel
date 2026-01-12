@@ -25,12 +25,19 @@
 
 use crate::ai::rules::VirtualFile;
 use crate::utils::format_size;
+use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Serialize;
 use std::collections::HashMap;
 
 /// Minimum files in a group to be considered a pattern (not outlier)
 const MIN_PATTERN_SIZE: usize = 3;
+
+/// Cached regex for extracting numbers from filenames
+/// Compiled once at first use, avoiding ~100μs overhead per hologram generation
+static NUMBER_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\d+").expect("Invalid number regex - this is a bug")
+});
 
 /// Compressed representation of a folder for AI context
 #[derive(Serialize, Clone, Debug)]
@@ -131,8 +138,8 @@ pub fn generate_hologram(files: &[VirtualFile]) -> FolderHologram {
         };
     }
 
-    // Regex to find numbers in filenames
-    let number_regex = Regex::new(r"\d+").expect("Invalid regex");
+    // Use cached regex for finding numbers in filenames
+    let number_regex = &*NUMBER_REGEX;
 
     // Step 1: Cluster files by skeleton
     let mut clusters: HashMap<String, FileCluster> = HashMap::new();
@@ -443,11 +450,12 @@ mod tests {
         assert_eq!(skeleton, "IMG_{NUM}.jpg");
         assert_eq!(num, "0001");
 
+        // "document_2024_final.pdf" has one number "2024", which gets replaced
         let (skeleton, num) = extract_skeleton("document_2024_final.pdf", &regex);
-        assert_eq!(skeleton, "document_2024_{NUM}.pdf");
-        assert_eq!(num, "final"); // "final" has no numbers, so empty
-        // Actually "2024" and "final" - final has no nums
+        assert_eq!(skeleton, "document_{NUM}_final.pdf");
+        assert_eq!(num, "2024");
 
+        // "screenshot_2024-12-30_001.png" has numbers: 2024, 12, 30, 001 - last one (001) gets replaced
         let (skeleton, num) = extract_skeleton("screenshot_2024-12-30_001.png", &regex);
         assert_eq!(skeleton, "screenshot_2024-12-30_{NUM}.png");
         assert_eq!(num, "001");

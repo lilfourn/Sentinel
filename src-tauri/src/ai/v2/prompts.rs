@@ -1149,7 +1149,8 @@ mod tests {
 
     #[test]
     fn test_v5_system_prompt_length() {
-        assert!(V5_HOLOGRAM_SYSTEM_PROMPT.len() < 5000);
+        // V5 prompt includes detailed hierarchy rules and examples
+        assert!(V5_HOLOGRAM_SYSTEM_PROMPT.len() < 10000);
         assert!(V5_HOLOGRAM_SYSTEM_PROMPT.len() > 1000);
     }
 

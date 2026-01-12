@@ -356,7 +356,7 @@ mod tests {
 
         assert!(stats.total_files >= 3);
         assert!(stats.total_dirs >= 1);
-        assert!(stats.scan_duration_ms > 0);
+        // Note: scan_duration_ms can be 0 on fast systems when scan completes in < 1ms
     }
 
     #[tokio::test]

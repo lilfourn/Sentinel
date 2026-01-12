@@ -1,4 +1,5 @@
-import { useCallback, useState, useRef, useEffect } from 'react';
+import { useCallback, useState, useRef, useEffect, memo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { invoke } from '@tauri-apps/api/core';
 import { useQueryClient } from '@tanstack/react-query';
 import {
@@ -81,7 +82,25 @@ interface FileGridItemProps {
   onDrop?: (e: React.DragEvent) => void;
 }
 
-function FileGridItem({
+/**
+ * Custom comparison for FileGridItem memo
+ * Only re-render if visual state changes
+ */
+function areGridItemPropsEqual(prev: FileGridItemProps, next: FileGridItemProps): boolean {
+  return (
+    prev.entry.path === next.entry.path &&
+    prev.entry.name === next.entry.name &&
+    prev.entry.modifiedAt === next.entry.modifiedAt &&
+    prev.isSelected === next.isSelected &&
+    prev.isEditing === next.isEditing &&
+    prev.isDragTarget === next.isDragTarget &&
+    prev.isValidDropTarget === next.isValidDropTarget &&
+    prev.ghostState === next.ghostState &&
+    prev.linkedPath === next.linkedPath
+  );
+}
+
+const FileGridItem = memo(function FileGridItem({
   entry,
   isSelected,
   isEditing = false,
@@ -213,7 +232,7 @@ function FileGridItem({
       )}
     </div>
   );
-}
+}, areGridItemPropsEqual);
 
 // New item component for grid view when creating files/folders
 interface NewGridItemProps {
@@ -257,22 +276,36 @@ export function FileGridView({ entries }: FileGridViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
-  const { navigateTo, setQuickLookPath, currentPath, showHidden } = useNavigationStore();
-  const {
-    selectedPaths,
-    focusedPath,
-    select,
-    selectRange,
-    selectMultiple,
-    clearSelection,
-    editingPath,
-    creatingType,
-    creatingInPath,
-    startEditing,
-    stopEditing,
-    startCreating,
-    stopCreating,
-  } = useSelectionStore();
+  // Navigation store - use useShallow for state, individual selectors for actions
+  const navState = useNavigationStore(
+    useShallow((s) => ({
+      currentPath: s.currentPath,
+      showHidden: s.showHidden,
+    }))
+  );
+  const navigateTo = useNavigationStore((s) => s.navigateTo);
+  const setQuickLookPath = useNavigationStore((s) => s.setQuickLookPath);
+  const { currentPath, showHidden } = navState;
+
+  // Selection store - use useShallow for state, individual selectors for actions
+  const selState = useSelectionStore(
+    useShallow((s) => ({
+      selectedPaths: s.selectedPaths,
+      focusedPath: s.focusedPath,
+      editingPath: s.editingPath,
+      creatingType: s.creatingType,
+      creatingInPath: s.creatingInPath,
+    }))
+  );
+  const select = useSelectionStore((s) => s.select);
+  const selectRange = useSelectionStore((s) => s.selectRange);
+  const selectMultiple = useSelectionStore((s) => s.selectMultiple);
+  const clearSelection = useSelectionStore((s) => s.clearSelection);
+  const startEditing = useSelectionStore((s) => s.startEditing);
+  const stopEditing = useSelectionStore((s) => s.stopEditing);
+  const startCreating = useSelectionStore((s) => s.startCreating);
+  const stopCreating = useSelectionStore((s) => s.stopCreating);
+  const { selectedPaths, focusedPath, editingPath, creatingType, creatingInPath } = selState;
   const { startOrganize } = useOrganizeStore();
   const userId = useSubscriptionStore((s) => s.userId);
   const {

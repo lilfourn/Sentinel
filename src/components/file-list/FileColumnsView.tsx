@@ -1,4 +1,5 @@
 import { useCallback, useState, useRef, useEffect } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   File,
@@ -61,14 +62,28 @@ export function FileColumnsView({ entries }: FileColumnsViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const columnsRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
-  const { navigateTo, setQuickLookPath, currentPath, showHidden } = useNavigationStore();
-  const {
-    selectedPaths,
-    select,
-    selectRange,
-    clearSelection,
-    startCreating,
-  } = useSelectionStore();
+  // Navigation store - use useShallow for state, individual selectors for actions
+  const navState = useNavigationStore(
+    useShallow((s) => ({
+      currentPath: s.currentPath,
+      showHidden: s.showHidden,
+    }))
+  );
+  const navigateTo = useNavigationStore((s) => s.navigateTo);
+  const setQuickLookPath = useNavigationStore((s) => s.setQuickLookPath);
+  const { currentPath, showHidden } = navState;
+
+  // Selection store - use useShallow for state, individual selectors for actions
+  const selState = useSelectionStore(
+    useShallow((s) => ({
+      selectedPaths: s.selectedPaths,
+    }))
+  );
+  const select = useSelectionStore((s) => s.select);
+  const selectRange = useSelectionStore((s) => s.selectRange);
+  const clearSelection = useSelectionStore((s) => s.clearSelection);
+  const startCreating = useSelectionStore((s) => s.startCreating);
+  const { selectedPaths } = selState;
   const { startOrganize } = useOrganizeStore();
   const userId = useSubscriptionStore((s) => s.userId);
   const ghostMap = useGhostStore((state) => state.ghostMap);

@@ -1,11 +1,15 @@
 import { useEffect, useRef, useCallback, Component, type ReactNode } from 'react';
 import { MessageSquare, AlertTriangle } from 'lucide-react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { useChatStore } from '../../stores/chat-store';
 import { useShallow } from 'zustand/react/shallow';
 import { MessageItem } from './MessageItem';
 
 // Threshold in pixels - if user is within this distance from bottom, auto-scroll
 const SCROLL_THRESHOLD_PX = 100;
+
+// Estimated message height for virtualization (will be measured dynamically)
+const ESTIMATED_MESSAGE_HEIGHT = 120;
 
 /**
  * Error boundary to catch rendering errors in the message list
@@ -72,10 +76,17 @@ class MessageListErrorBoundary extends Component<
 export function MessageList() {
   // Use selector to only subscribe to messages array, preventing re-renders on other state changes
   const messages = useChatStore(useShallow((state) => state.messages));
-  const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   // Track if user is near the bottom (should auto-scroll)
   const isNearBottomRef = useRef(true);
+
+  // Virtualizer for efficient rendering of long message lists
+  const virtualizer = useVirtualizer({
+    count: messages.length,
+    getScrollElement: () => containerRef.current,
+    estimateSize: () => ESTIMATED_MESSAGE_HEIGHT,
+    overscan: 3, // Render 3 extra items above/below viewport
+  });
 
   // Handle scroll to track if user is near bottom
   const handleScroll = useCallback(() => {
@@ -96,12 +107,12 @@ export function MessageList() {
     return () => container.removeEventListener('scroll', handleScroll);
   }, [handleScroll]);
 
-  // Auto-scroll to bottom only when near bottom
+  // Auto-scroll to bottom only when near bottom and messages change
   useEffect(() => {
-    if (isNearBottomRef.current && bottomRef.current) {
-      bottomRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (isNearBottomRef.current && messages.length > 0) {
+      virtualizer.scrollToIndex(messages.length - 1, { align: 'end', behavior: 'smooth' });
     }
-  }, [messages]);
+  }, [messages.length, virtualizer]);
 
   if (messages.length === 0) {
     return (
@@ -124,16 +135,43 @@ export function MessageList() {
     );
   }
 
+  const virtualItems = virtualizer.getVirtualItems();
+
   return (
     <MessageListErrorBoundary>
       <div
         ref={containerRef}
-        className="flex-1 overflow-y-auto p-4 pt-14 space-y-6"
+        className="flex-1 overflow-y-auto p-4 pt-14"
       >
-        {messages.map((message) => (
-          <MessageItem key={message.id} message={message} />
-        ))}
-        <div ref={bottomRef} />
+        {/* Virtualized container with proper height */}
+        <div
+          style={{
+            height: `${virtualizer.getTotalSize()}px`,
+            width: '100%',
+            position: 'relative',
+          }}
+        >
+          {virtualItems.map((virtualItem) => {
+            const message = messages[virtualItem.index];
+            return (
+              <div
+                key={virtualItem.key}
+                data-index={virtualItem.index}
+                ref={virtualizer.measureElement}
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  transform: `translateY(${virtualItem.start}px)`,
+                }}
+                className="pb-6"
+              >
+                <MessageItem message={message} />
+              </div>
+            );
+          })}
+        </div>
       </div>
     </MessageListErrorBoundary>
   );

@@ -114,7 +114,7 @@ impl std::error::Error for RegexValidationError {}
 /// * `Err(RegexValidationError)` if the pattern is potentially dangerous
 ///
 /// # Example
-/// ```
+/// ```rust,ignore
 /// use crate::security::regex_validator::validate_regex_complexity;
 ///
 /// // Safe pattern

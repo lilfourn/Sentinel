@@ -68,6 +68,50 @@ const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 /// Anthropic API version (updated for extended thinking support)
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+/// Token batching configuration
+/// Batches token emissions to reduce IPC overhead (~90% fewer events)
+const TOKEN_BATCH_WINDOW_MS: u64 = 16; // ~60fps update rate
+const TOKEN_BATCH_MAX_CHARS: usize = 50; // Flush when buffer exceeds this
+
+/// Token batcher for reducing streaming event frequency
+/// Instead of emitting for every token (~500 per response),
+/// batches them and emits every 16ms or 50 chars (~30-50 events)
+struct TokenBatcher {
+    buffer: String,
+    last_emit: std::time::Instant,
+}
+
+impl TokenBatcher {
+    fn new() -> Self {
+        Self {
+            buffer: String::with_capacity(256),
+            last_emit: std::time::Instant::now(),
+        }
+    }
+
+    /// Add a chunk to the buffer, potentially flushing if threshold met
+    fn add(&mut self, chunk: &str, app: &AppHandle) {
+        self.buffer.push_str(chunk);
+
+        let should_flush = self.buffer.len() >= TOKEN_BATCH_MAX_CHARS
+            || self.last_emit.elapsed() > Duration::from_millis(TOKEN_BATCH_WINDOW_MS);
+
+        if should_flush && !self.buffer.is_empty() {
+            emit_logged!(app, "chat:token", json!({ "chunk": &self.buffer }));
+            self.buffer.clear();
+            self.last_emit = std::time::Instant::now();
+        }
+    }
+
+    /// Flush any remaining content in the buffer
+    fn flush(&mut self, app: &AppHandle) {
+        if !self.buffer.is_empty() {
+            emit_logged!(app, "chat:token", json!({ "chunk": &self.buffer }));
+            self.buffer.clear();
+        }
+    }
+}
+
 /// Message in conversation history
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationMessage {
@@ -334,6 +378,9 @@ async fn process_stream(
     let mut current_thinking_block: Option<String> = None; // Extended thinking content
     let mut thinking_signature: Option<String> = None;
 
+    // Token batcher for reducing event frequency (~90% fewer IPC calls)
+    let mut token_batcher = TokenBatcher::new();
+
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(|e| format!("Stream error: {}", e))?;
         let chunk_str = String::from_utf8_lossy(&chunk);
@@ -347,23 +394,30 @@ async fn process_stream(
         }
         buffer.push_str(&chunk_str);
 
-        // Process complete lines (SSE format)
+        // Process complete lines (SSE format) - zero-copy where possible
         while let Some(newline_pos) = buffer.find('\n') {
-            let line = buffer[..newline_pos].trim().to_string();
-            buffer = buffer[newline_pos + 1..].to_string();
+            // Extract line without allocation for simple checks
+            let line_slice = buffer[..newline_pos].trim();
 
-            // Skip empty lines and event type lines
-            if line.is_empty() || line.starts_with("event:") {
+            // Skip empty lines and event type lines (no allocation needed)
+            if line_slice.is_empty() || line_slice.starts_with("event:") {
+                // Drain processed portion efficiently
+                buffer.drain(..=newline_pos);
                 continue;
             }
 
-            // Parse data lines
-            if let Some(data) = line.strip_prefix("data: ") {
+            // Parse data lines - clone data before draining buffer
+            let data_opt = line_slice.strip_prefix("data: ").map(|s| s.to_string());
+
+            // Drain the processed line from buffer (single operation vs two string allocations)
+            buffer.drain(..=newline_pos);
+
+            if let Some(data) = data_opt {
                 if data == "[DONE]" {
                     continue;
                 }
 
-                match serde_json::from_str::<StreamEvent>(data) {
+                match serde_json::from_str::<StreamEvent>(&data) {
                     Ok(event) => {
                         match event {
                             StreamEvent::ContentBlockStart { content_block, .. } => {
@@ -467,8 +521,9 @@ async fn process_stream(
                                         if let Some(text) =
                                             delta.get("text").and_then(|t| t.as_str())
                                         {
-                                            // Emit text chunk for streaming (with logging on failure)
-                                            emit_logged!(app, "chat:token", json!({ "chunk": text }));
+                                            // Batch text chunks to reduce IPC overhead
+                                            // Emits every 16ms or 50 chars instead of per-token
+                                            token_batcher.add(text, app);
 
                                             // Accumulate text with bounds checks
                                             if let Some(ref mut block) = current_text_block {
@@ -643,6 +698,9 @@ async fn process_stream(
             }
         }
     }
+
+    // Flush any remaining batched tokens
+    token_batcher.flush(app);
 
     Ok((
         stop_reason,
