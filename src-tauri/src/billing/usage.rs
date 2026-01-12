@@ -173,6 +173,8 @@ impl UsageTracker {
             "haiku_requests"
         } else if model.contains("sonnet") {
             "sonnet_requests"
+        } else if model.contains("opus") {
+            "opus_requests"
         } else if model.starts_with("gpt-5.2") {
             "gpt52_requests"
         } else if model.starts_with("gpt-5-mini") {
@@ -180,6 +182,7 @@ impl UsageTracker {
         } else if model.starts_with("gpt-5-nano") {
             "gpt5nano_requests"
         } else {
+            warn!(model = model, "Unknown model, defaulting to haiku tracking");
             "haiku_requests" // Default to haiku
         };
 

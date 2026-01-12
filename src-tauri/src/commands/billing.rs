@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::billing::{
-    BillingState, DailyLimits, DailyUsage, LimitCheckResult, LimitDenialReason,
-    MonthlyTokenQuota, SubscriptionCache, SubscriptionInfo,
+    validate_date_format, validate_user_id, BillingState, DailyLimits, DailyUsage,
+    LimitCheckResult, LimitDenialReason, MonthlyTokenQuota, SubscriptionCache, SubscriptionInfo,
 };
 
 /// Get current daily usage
@@ -14,6 +14,7 @@ pub async fn get_daily_usage(
     billing: State<'_, BillingState>,
     user_id: String,
 ) -> Result<DailyUsage, String> {
+    validate_user_id(&user_id)?;
     billing.usage_tracker.get_today_usage(&user_id)
 }
 
@@ -255,6 +256,8 @@ pub async fn sync_usage_from_convex(
     gpt5mini_requests: u64,
     gpt5nano_requests: u64,
 ) -> Result<(), String> {
+    validate_user_id(&user_id)?;
+    validate_date_format(&date)?;
     billing.usage_tracker.sync_from_convex(
         &user_id,
         &date,

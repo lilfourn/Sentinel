@@ -11,6 +11,35 @@ mod subscription;
 mod types;
 mod usage;
 
+/// Maximum allowed length for user IDs
+const MAX_USER_ID_LENGTH: usize = 256;
+
+/// Validate user ID format and length
+pub fn validate_user_id(user_id: &str) -> Result<(), String> {
+    if user_id.is_empty() {
+        return Err("User ID cannot be empty".to_string());
+    }
+    if user_id.len() > MAX_USER_ID_LENGTH {
+        return Err(format!(
+            "User ID too long (max {} characters)",
+            MAX_USER_ID_LENGTH
+        ));
+    }
+    // Check for obviously invalid characters
+    if user_id.contains('\0') || user_id.contains('\n') || user_id.contains('\r') {
+        return Err("User ID contains invalid characters".to_string());
+    }
+    Ok(())
+}
+
+/// Validate date format (YYYY-MM-DD)
+pub fn validate_date_format(date: &str) -> Result<(), String> {
+    use chrono::NaiveDate;
+    NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map_err(|_| "Invalid date format, expected YYYY-MM-DD".to_string())?;
+    Ok(())
+}
+
 pub use limits::LimitEnforcer;
 pub use subscription::SubscriptionManager;
 #[allow(unused_imports)]

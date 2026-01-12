@@ -5,9 +5,26 @@
 
 use chrono::Utc;
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard, PoisonError};
+use tracing::warn;
 
 use super::types::{SubscriptionCache, SubscriptionStatus, SubscriptionTier};
+
+/// Helper to acquire read lock with poison recovery
+fn acquire_read_lock<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(|poisoned: PoisonError<RwLockReadGuard<'_, T>>| {
+        warn!("RwLock was poisoned on read, recovering inner value");
+        poisoned.into_inner()
+    })
+}
+
+/// Helper to acquire write lock with poison recovery
+fn acquire_write_lock<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(|poisoned: PoisonError<RwLockWriteGuard<'_, T>>| {
+        warn!("RwLock was poisoned on write, recovering inner value");
+        poisoned.into_inner()
+    })
+}
 
 /// Cache TTL in milliseconds (5 minutes)
 const CACHE_TTL_MS: i64 = 5 * 60 * 1000;
@@ -27,7 +44,7 @@ impl SubscriptionManager {
 
     /// Get cached subscription, returning None if not cached or stale
     pub fn get_cached(&self, user_id: &str) -> Option<SubscriptionCache> {
-        let cache = self.cache.read().unwrap();
+        let cache = acquire_read_lock(&self.cache);
         if let Some(sub) = cache.get(user_id) {
             // Check if cache is still fresh
             let now = Utc::now().timestamp_millis();
@@ -54,10 +71,11 @@ impl SubscriptionManager {
 
     /// Update cache with subscription data
     pub fn update_cache(&self, subscription: SubscriptionCache) {
-        let mut cache = self.cache.write().unwrap();
-        eprintln!(
-            "[SubscriptionManager] Caching subscription for user {}: tier={:?}",
-            subscription.user_id, subscription.tier
+        let mut cache = acquire_write_lock(&self.cache);
+        tracing::debug!(
+            user_id = subscription.user_id,
+            tier = ?subscription.tier,
+            "Caching subscription"
         );
         cache.insert(subscription.user_id.clone(), subscription);
     }
@@ -99,12 +117,9 @@ impl SubscriptionManager {
 
     /// Clear cache for a user (on logout)
     pub fn clear_cache(&self, user_id: &str) {
-        let mut cache = self.cache.write().unwrap();
+        let mut cache = acquire_write_lock(&self.cache);
         cache.remove(user_id);
-        eprintln!(
-            "[SubscriptionManager] Cleared cache for user {}",
-            user_id
-        );
+        tracing::debug!(user_id = user_id, "Cleared subscription cache");
     }
 
     /// Invalidate cache for a user (forces refresh on next access)
@@ -150,9 +165,10 @@ impl Default for SubscriptionManager {
     }
 }
 
-// Implement Send + Sync for thread safety
-unsafe impl Send for SubscriptionManager {}
-unsafe impl Sync for SubscriptionManager {}
+// Note: SubscriptionManager is automatically Send + Sync because:
+// - RwLock<T> is Send when T: Send (HashMap<String, SubscriptionCache> is Send)
+// - RwLock<T> is Sync when T: Send + Sync (HashMap<String, SubscriptionCache> is Send + Sync)
+// No unsafe impl needed - the compiler derives it correctly.
 
 #[cfg(test)]
 mod tests {
