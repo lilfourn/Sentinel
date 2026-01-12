@@ -148,7 +148,7 @@ impl CredentialManager {
                 }
             }
 
-            // Fall through to keychain check below
+            return Err("OPENAI_API_KEY not configured. Please contact support.".to_string());
         }
 
         // For other providers: use Keychain

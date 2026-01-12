@@ -344,14 +344,7 @@ pub async fn generate_organize_plan_hybrid(
             );
         }
     }
-
-    // Record usage BEFORE the operation (prevents race conditions with concurrent requests)
-    // If the operation fails, the user loses one use - this is intentional to prevent abuse
-    if let Err(e) = billing.usage_tracker.increment_organize(&user_id) {
-        eprintln!("[AI Organize] Warning: Failed to record usage upfront: {}", e);
-        // Continue anyway - better to allow the operation than fail due to usage tracking
-    }
-    // === END BILLING CHECK ===
+    // === END BILLING CHECK (usage recorded after successful completion) ===
 
     let path = Path::new(&folder_path);
     if !path.exists() || !path.is_dir() {
@@ -466,7 +459,15 @@ pub async fn generate_organize_plan_hybrid(
     // Phase 3: Run Claude planning with enriched context
     emit("thinking", "Phase 3: Claude is creating organization rules...", None);
 
-    run_v6_hybrid_organization(path, &user_request, all_analyses, emit, Some(progress_emit)).await
+    let plan = run_v6_hybrid_organization(path, &user_request, all_analyses, emit, Some(progress_emit)).await?;
+
+    // Record usage AFTER successful completion (don't charge for failed operations)
+    if let Err(e) = billing.usage_tracker.increment_organize(&user_id) {
+        eprintln!("[AI Organize] Warning: Failed to record usage: {}", e);
+        // Don't fail the request, just log the error
+    }
+
+    Ok(plan)
 }
 
 /// Batch rename suggestion for a folder
@@ -872,12 +873,7 @@ pub async fn generate_simplification_plan(
             );
         }
     }
-
-    // Record usage BEFORE the operation
-    if let Err(e) = billing.usage_tracker.increment_organize(&user_id) {
-        eprintln!("[AI Simplify] Warning: Failed to record usage: {}", e);
-    }
-    // === END BILLING CHECK ===
+    // === END BILLING CHECK (usage recorded after successful completion) ===
 
     let path = Path::new(&folder_path);
     if !path.exists() || !path.is_dir() {
@@ -898,5 +894,13 @@ pub async fn generate_simplification_plan(
 
     emit("scanning", "Analyzing folder structure for simplification...", None);
 
-    run_simplification_loop(path, emit).await
+    let plan = run_simplification_loop(path, emit).await?;
+
+    // Record usage AFTER successful completion (don't charge for failed operations)
+    if let Err(e) = billing.usage_tracker.increment_organize(&user_id) {
+        eprintln!("[AI Simplify] Warning: Failed to record usage: {}", e);
+        // Don't fail the request, just log the error
+    }
+
+    Ok(plan)
 }
