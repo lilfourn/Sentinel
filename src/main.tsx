@@ -7,6 +7,7 @@ import { ConvexProviderWithClerk } from "convex/react-clerk";
 import { ConvexReactClient } from "convex/react";
 import { useAuth } from "@clerk/clerk-react";
 import { AuthSync } from "./components/auth/AuthSync";
+import { DesktopAuthSync } from "./components/auth/DesktopAuthSync";
 import { UsageSync } from "./components/UsageSync";
 import { queryClient } from "./lib/query-client";
 import { DesktopAuthProvider, useDesktopAuth } from "./contexts/DesktopAuthContext";
@@ -128,6 +129,7 @@ function ConvexClientProviderWithDesktopAuth({ children }: { children: React.Rea
 
   return (
     <ConvexProviderWithClerk client={convex} useAuth={useDesktopAuthForConvex}>
+      <DesktopAuthSync />
       <UsageSync />
       {children}
     </ConvexProviderWithClerk>
