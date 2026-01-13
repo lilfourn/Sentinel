@@ -620,13 +620,18 @@ async fn process_stream(
                                         ChatToolResult::Error(e) => (e.clone(), true),
                                     };
 
-                                    // Format input for display
+                                    // Format input for display (UTF-8 safe truncation)
                                     let input_display = tool_input.to_string();
                                     let input_display = if input_display.len() > 200 {
-                                        format!("{}...", &input_display[..200])
+                                        let truncate_at = (0..=200).rev().find(|&i| input_display.is_char_boundary(i)).unwrap_or(0);
+                                        format!("{}...", &input_display[..truncate_at])
                                     } else {
                                         input_display
                                     };
+
+                                    // UTF-8 safe output truncation
+                                    let output_max = result_content.len().min(500);
+                                    let output_truncate_at = (0..=output_max).rev().find(|&i| result_content.is_char_boundary(i)).unwrap_or(0);
 
                                     app.emit(
                                         "chat:thought",
@@ -634,7 +639,7 @@ async fn process_stream(
                                             "id": &id,
                                             "tool": &name,
                                             "input": input_display,
-                                            "output": &result_content[..result_content.len().min(500)],
+                                            "output": &result_content[..output_truncate_at],
                                             "status": if is_error { "error" } else { "complete" },
                                             "timestamp": chrono::Utc::now().timestamp_millis(),
                                         }),

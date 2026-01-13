@@ -90,6 +90,20 @@ const MAX_SCAN_DEPTH: usize = 3;
 /// Maximum files to scan per folder
 const MAX_FILES_PER_FOLDER: usize = 10_000;
 
+/// Truncate a string to at most `max_bytes` bytes, ensuring we don't
+/// cut in the middle of a UTF-8 character.
+fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    // Find the largest valid UTF-8 boundary <= max_bytes
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Context item from frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -280,11 +294,11 @@ fn hydrate_file_content(path: &str, name: &str) -> Result<String, String> {
                     "Document parsed"
                 );
 
-                // Truncate to 20KB for context window
+                // Truncate to 20KB for context window (UTF-8 safe)
                 let truncated = if parsed.text.len() > MAX_FILE_CONTENT {
                     format!(
                         "{}...\n\n[Truncated: {} chars total]",
-                        &parsed.text[..MAX_FILE_CONTENT],
+                        truncate_utf8(&parsed.text, MAX_FILE_CONTENT),
                         parsed.text.len()
                     )
                 } else {
@@ -316,10 +330,11 @@ fn hydrate_file_content(path: &str, name: &str) -> Result<String, String> {
     let content =
         fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {}", path, e))?;
 
+    // UTF-8 safe truncation
     let truncated = if content.len() > MAX_FILE_CONTENT {
         format!(
             "{}...\n\n[Truncated: {} bytes total]",
-            &content[..MAX_FILE_CONTENT],
+            truncate_utf8(&content, MAX_FILE_CONTENT),
             content.len()
         )
     } else {
