@@ -51,10 +51,14 @@ export function UsageSync(): null {
   const recordRenameRef = useRef(recordRename);
   const userIdRef = useRef(userId);
 
-  // Keep refs current
+  // Keep refs current (stable callback pattern)
+  // eslint-disable-next-line react-hooks/refs -- Sync refs with latest callbacks
   recordUsageRef.current = recordUsage;
+  // eslint-disable-next-line react-hooks/refs
   recordOrganizeRef.current = recordOrganize;
+  // eslint-disable-next-line react-hooks/refs
   recordRenameRef.current = recordRename;
+  // eslint-disable-next-line react-hooks/refs
   userIdRef.current = userId;
 
   /**

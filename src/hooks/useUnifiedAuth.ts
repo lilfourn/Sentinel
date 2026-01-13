@@ -35,13 +35,12 @@ export interface UnifiedAuthState {
  * Hook that provides unified auth state regardless of auth provider
  */
 export function useUnifiedAuth(): UnifiedAuthState {
-  // In production Tauri builds, use desktop auth
-  if (isTauriProduction()) {
-    return useDesktopAuthAdapter();
-  }
+  const isDesktop = isTauriProduction();
+  // Call both hooks unconditionally to satisfy rules-of-hooks
+  const desktopAuth = useDesktopAuthAdapter();
+  const clerkAuth = useClerkAuthAdapter();
 
-  // Otherwise, use Clerk
-  return useClerkAuthAdapter();
+  return isDesktop ? desktopAuth : clerkAuth;
 }
 
 /**

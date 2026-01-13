@@ -62,6 +62,7 @@ export function useVfsChannel(targetFolder: string | null) {
 
   return {
     /** Whether the channel is connected */
+    // eslint-disable-next-line react-hooks/refs -- Connection status checked synchronously
     isConnected: channelRef.current !== null,
   };
 }

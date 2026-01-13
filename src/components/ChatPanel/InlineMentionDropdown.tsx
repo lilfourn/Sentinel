@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Loader2 } from 'lucide-react';
 import { useChatStore, type MentionItem } from '../../stores/chat-store';
@@ -20,6 +20,22 @@ export function InlineMentionDropdown({ anchorRef, onSelect }: InlineMentionDrop
 
   const listRef = useRef<HTMLDivElement>(null);
   const selectedRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<{ bottom: number; left: number; width: number } | null>(null);
+
+  // Calculate position in layout effect (safe to read refs)
+  useLayoutEffect(() => {
+    if (!isMentionOpen || !anchorRef.current) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Reset position when closed
+      setPosition(null);
+      return;
+    }
+    const rect = anchorRef.current.getBoundingClientRect();
+    setPosition({
+      bottom: window.innerHeight - rect.top + 8,
+      left: rect.left,
+      width: Math.min(rect.width, 360),
+    });
+  }, [isMentionOpen, anchorRef]);
 
   // Scroll selected item into view
   useEffect(() => {
@@ -48,15 +64,13 @@ export function InlineMentionDropdown({ anchorRef, onSelect }: InlineMentionDrop
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isMentionOpen, closeMention, anchorRef]);
 
-  if (!isMentionOpen || !anchorRef.current) return null;
+  if (!isMentionOpen || !position) return null;
 
-  // Calculate position above the anchor
-  const anchorRect = anchorRef.current.getBoundingClientRect();
   const dropdownStyle: React.CSSProperties = {
     position: 'fixed',
-    bottom: window.innerHeight - anchorRect.top + 8,
-    left: anchorRect.left,
-    width: Math.min(anchorRect.width, 360),
+    bottom: position.bottom,
+    left: position.left,
+    width: position.width,
     maxHeight: 280,
     zIndex: 100,
   };

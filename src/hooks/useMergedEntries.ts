@@ -45,6 +45,10 @@ export function useMergedEntries(
       }));
     }
 
+    // Stable timestamp for this render pass
+    // eslint-disable-next-line react-hooks/purity -- Timestamp captured once per memo computation
+    const now = Date.now();
+
     // Apply ghost states from the ghost map
     const result: GhostFileEntry[] = [];
     const processedPaths = new Set<string>();
@@ -60,7 +64,7 @@ export function useMergedEntries(
           ghostState: ghostInfo.state,
           operationId: ghostInfo.operationId,
           linkedPath: ghostInfo.linkedPath,
-          ghostSince: Date.now(),
+          ghostSince: now,
         });
       } else {
         // Normal entry
@@ -93,15 +97,15 @@ export function useMergedEntries(
         isFile: hasExtension,
         isSymlink: false,
         size: 0,
-        modifiedAt: Date.now(),
-        createdAt: Date.now(),
+        modifiedAt: now,
+        createdAt: now,
         extension: hasExtension ? name.split('.').pop() || null : null,
         mimeType: null,
         isHidden: name.startsWith('.'),
         ghostState: ghostInfo.state,
         operationId: ghostInfo.operationId,
         linkedPath: ghostInfo.linkedPath,
-        ghostSince: Date.now(),
+        ghostSince: now,
         isVirtual: true,
       });
     }

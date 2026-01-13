@@ -25,7 +25,9 @@ export function useThumbnail(
     abortRef.current = false;
 
     // Reset state when path changes
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Intentional reset on dependency change
     setThumbnail(null);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setError(null);
 
     // Skip if no path or unsupported type

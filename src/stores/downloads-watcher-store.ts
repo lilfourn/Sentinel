@@ -508,7 +508,7 @@ function globToSafeRegex(pattern: string): RegExp | null {
       .replace(/\?/g, ".");     // ? matches single char
 
     return new RegExp("^" + escaped + "$", "i");
-  } catch (e) {
+  } catch {
     console.warn("Invalid pattern:", pattern);
     return null;
   }

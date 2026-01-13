@@ -28,16 +28,20 @@ export function AnalysisProgressBar({
   const isScanning = phase === 'scanning';
 
   // Get icon based on phase
-  const PhaseIcon = () => {
-    if (isComplete) return <CheckCircle size={14} className="text-green-400" />;
-    if (isPlanning) return <FolderTree size={14} className="text-purple-400 animate-pulse" />;
-    if (isAnalyzing) return <Brain size={14} className="text-blue-400 animate-pulse" />;
-    if (isScanning) return <FileSearch size={14} className="text-orange-400 animate-pulse" />;
-    return <Loader2 size={14} className="text-gray-400 animate-spin" />;
-  };
+  const phaseIcon = isComplete ? (
+    <CheckCircle size={14} className="text-green-400" />
+  ) : isPlanning ? (
+    <FolderTree size={14} className="text-purple-400 animate-pulse" />
+  ) : isAnalyzing ? (
+    <Brain size={14} className="text-blue-400 animate-pulse" />
+  ) : isScanning ? (
+    <FileSearch size={14} className="text-orange-400 animate-pulse" />
+  ) : (
+    <Loader2 size={14} className="text-gray-400 animate-spin" />
+  );
 
   // Get phase display name
-  const phaseDisplayName = () => {
+  const phaseDisplayName = (() => {
     switch (phase) {
       case 'scanning':
         return 'Scanning files';
@@ -56,7 +60,7 @@ export function AnalysisProgressBar({
       default:
         return 'Processing';
     }
-  };
+  })();
 
   return (
     <div
@@ -72,7 +76,7 @@ export function AnalysisProgressBar({
     >
       {/* Header row */}
       <div className="flex items-center gap-2 mb-2">
-        <PhaseIcon />
+        {phaseIcon}
         <span
           className={cn(
             'text-xs font-medium',
@@ -83,7 +87,7 @@ export function AnalysisProgressBar({
             !isComplete && !isPlanning && !isAnalyzing && !isScanning && 'text-gray-300'
           )}
         >
-          {phaseDisplayName()}
+          {phaseDisplayName}
         </span>
       </div>
 

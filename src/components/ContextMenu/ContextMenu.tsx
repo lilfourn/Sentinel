@@ -95,6 +95,7 @@ export function ContextMenu({ position, items, onClose }: ContextMenuProps) {
       y = Math.max(padding, position.y - rect.height);
     }
 
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Position adjustment needed synchronously
     setAdjustment({
       forPosition: position,
       adjustedPosition: { x, y },

@@ -132,7 +132,7 @@ export function useAutoRename(enabled: boolean) {
           }
         );
       }
-    } catch (error) {
+    } catch {
       // Log sanitized error (don't expose file paths)
       console.error('Auto-rename operation failed');
     } finally {

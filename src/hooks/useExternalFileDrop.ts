@@ -49,8 +49,11 @@ export function useExternalFileDrop(
 
   useEffect(() => {
     if (!enabled) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Reset state when disabled
       setIsDraggingExternal(false);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setPendingPaths([]);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setPosition(null);
       return;
     }

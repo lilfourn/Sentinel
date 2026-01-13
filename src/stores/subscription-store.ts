@@ -27,7 +27,7 @@ function migrateLocalStorage() {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
       }
     }
-  } catch (e) {
+  } catch {
     // If parsing fails, clear the whole thing to start fresh
     console.warn('[SubscriptionStore] Clearing corrupted localStorage');
     localStorage.removeItem(STORAGE_KEY);

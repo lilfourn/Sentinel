@@ -306,6 +306,7 @@ pub async fn generate_organize_plan_hybrid(
     app_handle: tauri::AppHandle,
 ) -> Result<OrganizePlan, String> {
     use tauri::Emitter;
+    use walkdir::WalkDir;
     use crate::ai::grok::{FileAnalysis, openai_worker::{FileContent, calculate_worker_count, create_file_batches, run_parallel_workers}};
     use crate::ai::grok::document_parser::parse_document;
 
@@ -379,10 +380,12 @@ pub async fn generate_organize_plan_hybrid(
     emit("indexing", "Phase 1: Scanning folder for files...", None);
 
     let mut file_contents: Vec<FileContent> = Vec::new();
-    let entries = std::fs::read_dir(path)
-        .map_err(|e| format!("Failed to read directory: {}", e))?;
-
-    for entry in entries.filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(path)
+        .follow_links(false)  // Security: don't follow symlinks
+        .max_depth(10)        // Prevent runaway recursion
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         let entry_path = entry.path();
         if entry_path.is_file() {
             let filename = entry_path.file_name()
@@ -393,12 +396,12 @@ pub async fn generate_organize_plan_hybrid(
                 .unwrap_or_default();
 
             // Try to extract text from file
-            let content = parse_document(&entry_path)
+            let content = parse_document(entry_path)
                 .map(|doc| doc.text)
                 .unwrap_or_else(|_| format!("File: {}", filename));
 
             file_contents.push(FileContent {
-                path: entry_path,
+                path: entry_path.to_path_buf(),
                 filename,
                 content,
                 extension,

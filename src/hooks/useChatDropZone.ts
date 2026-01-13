@@ -79,6 +79,7 @@ export function useChatDropZone(options: UseChatDropZoneOptions): UseChatDropZon
 
   // Ref for stable callback
   const onContextAddRef = useRef(onContextAdd);
+  // eslint-disable-next-line react-hooks/refs -- Sync ref with latest callback
   onContextAddRef.current = onContextAdd;
 
   // Handle external file drops via Tauri

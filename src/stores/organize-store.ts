@@ -206,7 +206,7 @@ async function executeOperation(op: OrganizeOperation): Promise<void> {
     case 'move':
       await invoke('move_file', { source: op.source, destination: op.destination });
       break;
-    case 'rename':
+    case 'rename': {
       if (!op.path || !op.newName) {
         throw new Error(`Rename operation missing required fields: path=${op.path}, newName=${op.newName}`);
       }
@@ -214,6 +214,7 @@ async function executeOperation(op: OrganizeOperation): Promise<void> {
       const newPath = `${parentPath}/${op.newName}`;
       await invoke('rename_file', { oldPath: op.path, newPath });
       break;
+    }
     case 'trash':
       try {
         await invoke('delete_to_trash', { path: op.path });
@@ -1265,7 +1266,7 @@ export const useOrganizeStore = create<OrganizeState & OrganizeActions>((set, ge
     // Filter to only enabled operations and strip editing metadata
     const filteredOps: OrganizeOperation[] = editableOperations
       .filter((op) => op.enabled)
-      .map(({ enabled, isModified, originalDestination, originalNewName, ...op }) => op);
+      .map(({ enabled: _enabled, isModified: _isModified, originalDestination: _originalDestination, originalNewName: _originalNewName, ...op }) => op);
 
     // Generate new planId since plan was modified
     // This ensures VFS-WAL sync validation will catch any edits

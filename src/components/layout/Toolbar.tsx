@@ -63,7 +63,7 @@ export function Toolbar({
   ];
 
   return (
-    <header data-tauri-drag-region className="glass-toolbar h-12 flex items-center pl-20 pr-4 gap-2">
+    <header data-tauri-drag-region className="glass-toolbar h-12 flex items-center pl-20 pr-4 gap-2 z-10">
       {/* Spacer - draggable area */}
       <div data-tauri-drag-region className="flex-1" />
 
