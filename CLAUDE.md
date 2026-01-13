@@ -1,8 +1,10 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 ## Project Overview
 
-**Sentinel** is a Tauri v2 desktop file manager with AI-powered organization. React 19 frontend + Rust backend, featuring agentic AI that explores folders and creates organization plans.
+**Sentinel** is a Tauri v2 desktop file manager with AI-powered organization. React 19 frontend + Rust backend + Convex cloud backend, featuring agentic AI that explores folders and creates organization plans. Users pay for a subscription (free/pro tiers) to access AI features - we provide the API keys.
 
 ### Core Features
 - File browsing (grid/list/column views) with drag-and-drop
@@ -15,11 +17,26 @@
 ## Commands
 
 ```bash
-npm run tauri dev      # Development (Vite + Tauri)
-npm run tauri build    # Production build
-npm run build          # Type check (tsc && vite build)
-cargo check            # Rust checks (from src-tauri/)
-cargo test
+# Development
+npm run tauri dev          # Development (Vite + Tauri)
+npm run tauri build        # Production build
+
+# Frontend
+npm run build              # Type check (tsc && vite build)
+npm test                   # Run frontend tests (vitest watch)
+npm run test:run           # Run frontend tests once
+npm run test:coverage      # Run tests with coverage
+npm test -- src/stores/chat-store.test.ts  # Run single test file
+
+# Rust backend (from src-tauri/)
+cargo check                # Type checking
+cargo test                 # Run all tests
+cargo test test_name       # Run single test
+cargo build --profile release-fast  # Fast release build for testing
+
+# Convex (cloud backend)
+npx convex dev             # Start Convex dev server
+npx convex deploy          # Deploy to production
 ```
 
 ## Architecture
@@ -38,30 +55,39 @@ cargo test
 │ - Execution      │ - settings       │ - ConfirmDialog       │
 │ - Ghost overlay  │                  │ - ContextMenu         │
 └──────────────────┴──────────────────┴───────────────────────┘
-                            │ invoke()
-                            ▼
+        │ invoke()                              │ Convex client
+        ▼                                       ▼
+┌───────────────────────────────┐    ┌────────────────────────┐
+│   Backend (Rust + Tauri)      │    │   Convex Cloud         │
+├───────────────────────────────┤    ├────────────────────────┤
+│ Commands                      │    │ users, userSettings    │
+│ - chat, ai, filesystem        │    │ subscriptions          │
+│ - vfs, wal, jobs              │    │ dailyUsage, history    │
+│                               │    │ stripeWebhookEvents    │
+│ AI Module                     │    └────────────────────────┘
+│ - chat/agent (ReAct)          │
+│ - v2/agent_loop (organize)    │
+│ - grok/ (OpenAI workers)      │
+│ - rules/ (DSL parser)         │
+│                               │
+│ Infrastructure                │
+│ - vfs/ (simulation)           │
+│ - wal/ (journaling)           │
+│ - execution/ (DAG)            │
+│ - vector/ (embeddings)        │
+│ - billing/ (limits)           │
+└───────────────────────────────┘
+        │ HTTP
+        ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                   Backend (Rust + Tauri)                     │
-├──────────────────┬──────────────────┬───────────────────────┤
-│ Commands         │ AI Module        │ Infrastructure        │
-│ - chat.rs        │ - chat/agent.rs  │ - vfs/ (simulation)   │
-│ - ai.rs          │ - v2/agent_loop  │ - wal/ (journaling)   │
-│ - filesystem.rs  │ - v2/compression │ - execution/ (DAG)    │
-│ - jobs.rs        │ - v2/tools       │ - vector/ (embeddings)│
-│ - vfs.rs         │ - rules/         │ - tree/ (compression) │
-│ - wal.rs         │ - client.rs      │ - jobs/ (persistence) │
-└──────────────────┴──────────────────┴───────────────────────┘
-                            │ HTTP
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Anthropic Claude API                      │
-│    Haiku (fast) │ Sonnet (planning) │ Opus (reasoning)      │
+│                    AI APIs                                   │
+│  Claude (Haiku/Sonnet)       │  OpenAI (GPT-5-nano/mini)    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ## Frontend (src/)
 
-**Stack**: React 19, TypeScript, Vite 7, TailwindCSS v4, Zustand, TanStack Query
+**Stack**: React 19, TypeScript, Vite 7, TailwindCSS v4, Zustand, TanStack Query, Clerk (auth)
 
 ### Key Stores
 | Store | Purpose |
@@ -72,30 +98,31 @@ cargo test
 | `ghost-store.ts` | Ghost animations for file operation previews |
 | `navigation-store.ts` | Directory navigation, history, view mode |
 | `selection-store.ts` | Multi-file selection |
+| `subscription-store.ts` | Billing tier, usage limits |
 
 ### Chat System (`src/components/ChatPanel/`)
-- **ChatInput** - Model selector (Haiku/Sonnet/Opus), @mention support
+- **ChatInput** - Model selector (Haiku/Sonnet), @mention support
 - **MessageItem** - Extended thinking display, tool visualization (memoized)
 - **ThoughtAccordion** - Shows agent tool calls (search, read, inspect)
 - **InlineMentionDropdown** - File/folder picker with context strategies
-- **MessageList** - Message rendering with error boundary
-- **StreamingIndicator** - Visual feedback during AI responses
 
 ## Backend (src-tauri/)
 
 ### Module Structure
 ```
 src-tauri/src/
-├── commands/        # Tauri command handlers (chat, ai, filesystem, vfs, wal, jobs)
+├── commands/        # Tauri command handlers
 ├── ai/
 │   ├── chat/        # ReAct agent for Q&A (streaming, extended thinking)
 │   ├── v2/          # Organize agent (map-reduce, hologram compression)
+│   ├── grok/        # OpenAI integration (explore agent, vision, document parser)
 │   └── rules/       # DSL rule parser and evaluator
 ├── vfs/             # Virtual filesystem simulation
 ├── wal/             # Write-ahead log for crash recovery
 ├── execution/       # DAG-based parallel execution
 ├── vector/          # Local embeddings via fastembed
-├── tree/            # XML tree compression
+├── billing/         # Usage limits per subscription tier
+├── history/         # Undo/redo with checksums
 └── jobs/            # Job persistence
 ```
 
@@ -114,9 +141,8 @@ src-tauri/src/
 | Model | Use Case |
 |-------|----------|
 | GPT-5-nano (OpenAI) | File exploration, entity extraction, document classification |
-| Claude Haiku 4.5 | Fast analysis, exploration fallback |
-| Claude Sonnet 4.5 | Organization planning, rule creation |
-| Claude Opus 4.5 | Extended thinking, complex reasoning |
+| Claude Haiku | Fast analysis, exploration fallback |
+| Claude Sonnet | Organization planning, rule creation, extended thinking |
 
 ### Chat Agent (ReAct Loop)
 - Max 8 iterations with 500ms rate limiting
@@ -130,7 +156,18 @@ Three modes based on folder size:
 2. **Map-Reduce** (300-5000 files) - Rule-based iteration until 95% coverage
 3. **Hologram** (pattern-heavy) - Adaptive pattern folding (85-94% token savings)
 
-Features: Prompt caching, model escalation (Haiku→Sonnet), rate limiting
+## Convex Backend (convex/)
+
+Cloud backend for user data, settings sync, and billing. Uses Clerk for authentication, Stripe for payments.
+
+| Table | Purpose |
+|-------|---------|
+| `users` | User profiles linked to Clerk auth |
+| `userSettings` | Synced preferences (theme, AI model, watched folders) |
+| `subscriptions` | Stripe billing state (free/pro tiers) |
+| `dailyUsage` | Per-model request counts for rate limiting |
+| `organizeHistory` | Track AI organize operations for undo |
+| `renameHistory` | Track auto-rename operations |
 
 ## Event System
 
@@ -150,10 +187,11 @@ Features: Prompt caching, model escalation (Haiku→Sonnet), rate limiting
 | `src/stores/organize-store.ts` | `src-tauri/src/jobs/mod.rs` |
 | `src/types/vfs.ts` | `src-tauri/src/vfs/mod.rs` |
 
-## Development Tips
+## Development Notes
 
-1. **API Key**: Set in Settings panel before using AI features
+1. **Billing Model**: Users subscribe (free/pro) - we provide AI API keys, not users
 2. **Debug AI**: Check terminal for `[AgenticLoop]`, `[AI]`, `[ChatAgent]` logs
 3. **Streaming**: Chat uses SSE parsing; organize uses JSON responses
 4. **Recovery**: Interrupted jobs show recovery banner on startup
 5. **VFS Preview**: Changes simulated in virtual filesystem before execution
+6. **Usage Limits**: Tracked in Convex `dailyUsage` table; enforced in `src-tauri/src/billing/`

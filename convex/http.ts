@@ -19,14 +19,14 @@ const corsHeaders = {
 
 // Helper to add CORS headers to response
 function withCors(response: Response): Response {
-  const newHeaders = new Headers(response.headers);
-  Object.entries(corsHeaders).forEach(([key, value]) => {
-    newHeaders.set(key, value);
-  });
+  const headers = new Headers(response.headers);
+  for (const [key, value] of Object.entries(corsHeaders)) {
+    headers.set(key, value);
+  }
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
-    headers: newHeaders,
+    headers,
   });
 }
 
@@ -542,11 +542,7 @@ interface StripeInvoice {
  * Map Stripe price ID to subscription tier
  */
 function mapPriceToTier(priceId: string | undefined): "free" | "pro" {
-  const proPriceId = getEnv("STRIPE_PRO_PRICE_ID");
-  if (priceId && priceId === proPriceId) {
-    return "pro";
-  }
-  return "free";
+  return priceId === getEnv("STRIPE_PRO_PRICE_ID") ? "pro" : "free";
 }
 
 /**

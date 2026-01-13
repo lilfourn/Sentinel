@@ -20,6 +20,8 @@ import * as secureStorage from "./secure-storage";
 const AUTH_CONFIG = {
   // Web auth page URL - user needs to deploy this
   webAuthUrl: "https://app-sentinel.dev/desktop-auth",
+  // Clerk user profile URL (derived from publishable key domain)
+  clerkAccountUrl: "https://accounts.clerk.app-sentinel.dev/user",
   // Deep link scheme
   callbackScheme: "sentinel",
   // Token storage key
@@ -110,6 +112,13 @@ export async function openSignOutInBrowser(): Promise<void> {
 }
 
 /**
+ * Open browser to Clerk account management page
+ */
+export async function openAccountInBrowser(): Promise<void> {
+  await openUrl(AUTH_CONFIG.clerkAccountUrl);
+}
+
+/**
  * Store auth data securely using Tauri store plugin
  * Falls back to localStorage if store is not available
  */
@@ -157,10 +166,7 @@ export async function getStoredToken(): Promise<string | null> {
 export async function getStoredUser(): Promise<DesktopUser | null> {
   try {
     const userData = await secureStorage.getUser<unknown>();
-    if (!userData) return null;
-
-    // Validate with Zod schema
-    const validated = parseStoredUser(userData);
+    const validated = userData ? parseStoredUser(userData) : null;
     if (!validated) return null;
 
     return {
@@ -285,5 +291,5 @@ export async function listenForAuthCallback(
  * Get a token for API calls (compatible with Clerk's getToken interface)
  */
 export async function getToken(): Promise<string | null> {
-  return await getStoredToken();
+  return getStoredToken();
 }
